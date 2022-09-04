@@ -18,6 +18,7 @@ Nodes   == 1..(NumMN + NumClient)
     define {
         getVoteMin(voteVal, origVal) == CHOOSE i \in (voteVal \ {origVal}): (\A j \in (voteVal \ {origVal}): i <= j)  
         getVoteVal(votes) == {votes[i] : i \in Backups} 
+        getVoteCnt(voteVal, votes) == [i \in voteVal |-> Cardinality(UNION {{j \in Backups: votes[j] = i}})]
         getMajorityVoteVal(voteVal, voteCnt) == CHOOSE i \in voteVal: (\A j \in voteVal: voteCnt[j] <= voteCnt[i]) 
     }
     
@@ -35,25 +36,15 @@ Nodes   == 1..(NumMN + NumClient)
     }
     
     procedure EvalRules(votes = [n \in Backups |-> -1], origVal=0, swapVal=0)
-    variable minVal = 0, Q = {}, 
-             voteVal = getVoteVal(votes),
-             voteCnt = [i \in voteVal |-> 0],
+    variable voteVal = getVoteVal(votes),
+             voteCnt = getVoteCnt(voteVal, votes),
              majVoteVal = -1;
     {
-    EVAL:
-\*        minVal := getVoteMin(voteVal, origVal);
-        Q := Backups;
+    EVAL_check_failure:
+        if (-1 \in voteVal) { retv[self] := -1; return };
     EVAL1:
-        while (Q # {}) {
-            with (p \in  Q) {
-                voteCnt[votes[p]] := voteCnt[votes[p]] + 1;
-                Q := Q \ {p};
-            }
-        };
-    EVAL2:
         majVoteVal := getMajorityVoteVal(voteVal, voteCnt);
-        if (minVal = -1) { retv[self] := -1 }
-        else if (voteCnt[majVoteVal] = NumMN - 1) {
+        if (voteCnt[majVoteVal] = NumMN - 1) {
             retv[self] := IF majVoteVal = origVal THEN 0 ELSE 3;
         } else if (2 * voteCnt[majVoteVal] > NumMN - 1) {
             retv[self] := IF majVoteVal = origVal THEN 1 ELSE 3;
@@ -70,7 +61,8 @@ Nodes   == 1..(NumMN + NumClient)
     
     procedure SNAPSHOT_Write()
     variable orig = -1, ret = -1, nVal = 0,
-             votes = [n \in Backups |-> -1];
+             votes = [n \in Backups |-> -1],
+             Q = {};
     {
     W_prepare:
         SNAPSHOT_Read(orig);
@@ -136,21 +128,22 @@ Nodes   == 1..(NumMN + NumClient)
         }
     }
 }*)
-\* BEGIN TRANSLATION (chksum(pcal) = "36be12be" /\ chksum(tla) = "eb1ed7b7")
-\* Procedure variable votes of procedure SNAPSHOT_Write at line 73 col 14 changed to votes_
+\* BEGIN TRANSLATION (chksum(pcal) = "53b2ff49" /\ chksum(tla) = "b706f6e9")
+\* Procedure variable votes of procedure SNAPSHOT_Write at line 64 col 14 changed to votes_
 VARIABLES db, up, FailNum, Primary, Backups, retv, pc, stack
 
 (* define statement *)
 getVoteMin(voteVal, origVal) == CHOOSE i \in (voteVal \ {origVal}): (\A j \in (voteVal \ {origVal}): i <= j)
 getVoteVal(votes) == {votes[i] : i \in Backups}
+getVoteCnt(voteVal, votes) == [i \in voteVal |-> Cardinality(UNION {{j \in Backups: votes[j] = i}})]
 getMajorityVoteVal(voteVal, voteCnt) == CHOOSE i \in voteVal: (\A j \in voteVal: voteCnt[j] <= voteCnt[i])
 
-VARIABLES votes, origVal, swapVal, minVal, Q, voteVal, voteCnt, majVoteVal, 
-          orig, ret, nVal, votes_, cntr, readVal
+VARIABLES votes, origVal, swapVal, voteVal, voteCnt, majVoteVal, orig, ret, 
+          nVal, votes_, Q, cntr, readVal
 
 vars == << db, up, FailNum, Primary, Backups, retv, pc, stack, votes, origVal, 
-           swapVal, minVal, Q, voteVal, voteCnt, majVoteVal, orig, ret, nVal, 
-           votes_, cntr, readVal >>
+           swapVal, voteVal, voteCnt, majVoteVal, orig, ret, nVal, votes_, Q, 
+           cntr, readVal >>
 
 ProcSet == (Clients)
 
@@ -165,65 +158,59 @@ Init == (* Global variables *)
         /\ votes = [ self \in ProcSet |-> [n \in Backups |-> -1]]
         /\ origVal = [ self \in ProcSet |-> 0]
         /\ swapVal = [ self \in ProcSet |-> 0]
-        /\ minVal = [ self \in ProcSet |-> 0]
-        /\ Q = [ self \in ProcSet |-> {}]
         /\ voteVal = [ self \in ProcSet |-> getVoteVal(votes[self])]
-        /\ voteCnt = [ self \in ProcSet |-> [i \in voteVal[self] |-> 0]]
+        /\ voteCnt = [ self \in ProcSet |-> getVoteCnt(voteVal[self], votes[self])]
         /\ majVoteVal = [ self \in ProcSet |-> -1]
         (* Procedure SNAPSHOT_Write *)
         /\ orig = [ self \in ProcSet |-> -1]
         /\ ret = [ self \in ProcSet |-> -1]
         /\ nVal = [ self \in ProcSet |-> 0]
         /\ votes_ = [ self \in ProcSet |-> [n \in Backups |-> -1]]
+        /\ Q = [ self \in ProcSet |-> {}]
         (* Process c *)
         /\ cntr = [self \in Clients |-> 0]
         /\ readVal = [self \in Clients |-> -1]
         /\ stack = [self \in ProcSet |-> << >>]
         /\ pc = [self \in ProcSet |-> "start"]
 
-EVAL(self) == /\ pc[self] = "EVAL"
-              /\ Q' = [Q EXCEPT ![self] = Backups]
-              /\ pc' = [pc EXCEPT ![self] = "EVAL1"]
-              /\ UNCHANGED << db, up, FailNum, Primary, Backups, retv, stack, 
-                              votes, origVal, swapVal, minVal, voteVal, 
-                              voteCnt, majVoteVal, orig, ret, nVal, votes_, 
-                              cntr, readVal >>
+EVAL_check_failure(self) == /\ pc[self] = "EVAL_check_failure"
+                            /\ IF -1 \in voteVal[self]
+                                  THEN /\ retv' = [retv EXCEPT ![self] = -1]
+                                       /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
+                                       /\ voteVal' = [voteVal EXCEPT ![self] = Head(stack[self]).voteVal]
+                                       /\ voteCnt' = [voteCnt EXCEPT ![self] = Head(stack[self]).voteCnt]
+                                       /\ majVoteVal' = [majVoteVal EXCEPT ![self] = Head(stack[self]).majVoteVal]
+                                       /\ votes' = [votes EXCEPT ![self] = Head(stack[self]).votes]
+                                       /\ origVal' = [origVal EXCEPT ![self] = Head(stack[self]).origVal]
+                                       /\ swapVal' = [swapVal EXCEPT ![self] = Head(stack[self]).swapVal]
+                                       /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
+                                  ELSE /\ pc' = [pc EXCEPT ![self] = "EVAL1"]
+                                       /\ UNCHANGED << retv, stack, votes, 
+                                                       origVal, swapVal, 
+                                                       voteVal, voteCnt, 
+                                                       majVoteVal >>
+                            /\ UNCHANGED << db, up, FailNum, Primary, Backups, 
+                                            orig, ret, nVal, votes_, Q, cntr, 
+                                            readVal >>
 
 EVAL1(self) == /\ pc[self] = "EVAL1"
-               /\ IF Q[self] # {}
-                     THEN /\ \E p \in Q[self]:
-                               /\ voteCnt' = [voteCnt EXCEPT ![self][votes[self][p]] = voteCnt[self][votes[self][p]] + 1]
-                               /\ Q' = [Q EXCEPT ![self] = Q[self] \ {p}]
-                          /\ pc' = [pc EXCEPT ![self] = "EVAL1"]
-                     ELSE /\ pc' = [pc EXCEPT ![self] = "EVAL2"]
-                          /\ UNCHANGED << Q, voteCnt >>
-               /\ UNCHANGED << db, up, FailNum, Primary, Backups, retv, stack, 
-                               votes, origVal, swapVal, minVal, voteVal, 
-                               majVoteVal, orig, ret, nVal, votes_, cntr, 
-                               readVal >>
-
-EVAL2(self) == /\ pc[self] = "EVAL2"
                /\ majVoteVal' = [majVoteVal EXCEPT ![self] = getMajorityVoteVal(voteVal[self], voteCnt[self])]
-               /\ IF minVal[self] = -1
-                     THEN /\ retv' = [retv EXCEPT ![self] = -1]
-                     ELSE /\ IF voteCnt[self][majVoteVal'[self]] = NumMN - 1
-                                THEN /\ retv' = [retv EXCEPT ![self] = IF majVoteVal'[self] = origVal[self] THEN 0 ELSE 3]
-                                ELSE /\ IF 2 * voteCnt[self][majVoteVal'[self]] > NumMN - 1
-                                           THEN /\ retv' = [retv EXCEPT ![self] = IF majVoteVal'[self] = origVal[self] THEN 1 ELSE 3]
-                                           ELSE /\ IF db[Primary] # origVal[self]
-                                                      THEN /\ retv' = [retv EXCEPT ![self] = 4]
-                                                      ELSE /\ IF getVoteMin(voteVal[self], origVal[self]) = swapVal[self]
-                                                                 THEN /\ retv' = [retv EXCEPT ![self] = 2]
-                                                                 ELSE /\ retv' = [retv EXCEPT ![self] = 3]
+               /\ IF voteCnt[self][majVoteVal'[self]] = NumMN - 1
+                     THEN /\ retv' = [retv EXCEPT ![self] = IF majVoteVal'[self] = origVal[self] THEN 0 ELSE 3]
+                     ELSE /\ IF 2 * voteCnt[self][majVoteVal'[self]] > NumMN - 1
+                                THEN /\ retv' = [retv EXCEPT ![self] = IF majVoteVal'[self] = origVal[self] THEN 1 ELSE 3]
+                                ELSE /\ IF db[Primary] # origVal[self]
+                                           THEN /\ retv' = [retv EXCEPT ![self] = 4]
+                                           ELSE /\ IF getVoteMin(voteVal[self], origVal[self]) = swapVal[self]
+                                                      THEN /\ retv' = [retv EXCEPT ![self] = 2]
+                                                      ELSE /\ retv' = [retv EXCEPT ![self] = 3]
                /\ pc' = [pc EXCEPT ![self] = "EVAL_FINI"]
                /\ UNCHANGED << db, up, FailNum, Primary, Backups, stack, votes, 
-                               origVal, swapVal, minVal, Q, voteVal, voteCnt, 
-                               orig, ret, nVal, votes_, cntr, readVal >>
+                               origVal, swapVal, voteVal, voteCnt, orig, ret, 
+                               nVal, votes_, Q, cntr, readVal >>
 
 EVAL_FINI(self) == /\ pc[self] = "EVAL_FINI"
                    /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
-                   /\ minVal' = [minVal EXCEPT ![self] = Head(stack[self]).minVal]
-                   /\ Q' = [Q EXCEPT ![self] = Head(stack[self]).Q]
                    /\ voteVal' = [voteVal EXCEPT ![self] = Head(stack[self]).voteVal]
                    /\ voteCnt' = [voteCnt EXCEPT ![self] = Head(stack[self]).voteCnt]
                    /\ majVoteVal' = [majVoteVal EXCEPT ![self] = Head(stack[self]).majVoteVal]
@@ -232,9 +219,9 @@ EVAL_FINI(self) == /\ pc[self] = "EVAL_FINI"
                    /\ swapVal' = [swapVal EXCEPT ![self] = Head(stack[self]).swapVal]
                    /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                    /\ UNCHANGED << db, up, FailNum, Primary, Backups, retv, 
-                                   orig, ret, nVal, votes_, cntr, readVal >>
+                                   orig, ret, nVal, votes_, Q, cntr, readVal >>
 
-EvalRules(self) == EVAL(self) \/ EVAL1(self) \/ EVAL2(self)
+EvalRules(self) == EVAL_check_failure(self) \/ EVAL1(self)
                       \/ EVAL_FINI(self)
 
 W_prepare(self) == /\ pc[self] = "W_prepare"
@@ -243,9 +230,9 @@ W_prepare(self) == /\ pc[self] = "W_prepare"
                    /\ Q' = [Q EXCEPT ![self] = Backups]
                    /\ pc' = [pc EXCEPT ![self] = "W_cas_bk"]
                    /\ UNCHANGED << db, up, FailNum, Primary, Backups, retv, 
-                                   stack, votes, origVal, swapVal, minVal, 
-                                   voteVal, voteCnt, majVoteVal, ret, votes_, 
-                                   cntr, readVal >>
+                                   stack, votes, origVal, swapVal, voteVal, 
+                                   voteCnt, majVoteVal, ret, votes_, cntr, 
+                                   readVal >>
 
 W_cas_bk(self) == /\ pc[self] = "W_cas_bk"
                   /\ IF Q[self] # {}
@@ -258,13 +245,10 @@ W_cas_bk(self) == /\ pc[self] = "W_cas_bk"
                                   /\ Q' = [Q EXCEPT ![self] = Q[self] \ {p}]
                              /\ pc' = [pc EXCEPT ![self] = "W_cas_bk"]
                              /\ UNCHANGED << stack, votes, origVal, swapVal, 
-                                             minVal, voteVal, voteCnt, 
-                                             majVoteVal >>
+                                             voteVal, voteCnt, majVoteVal >>
                         ELSE /\ /\ origVal' = [origVal EXCEPT ![self] = orig[self]]
                                 /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "EvalRules",
                                                                          pc        |->  "W_modify_rest",
-                                                                         minVal    |->  minVal[self],
-                                                                         Q         |->  Q[self],
                                                                          voteVal   |->  voteVal[self],
                                                                          voteCnt   |->  voteCnt[self],
                                                                          majVoteVal |->  majVoteVal[self],
@@ -274,13 +258,11 @@ W_cas_bk(self) == /\ pc[self] = "W_cas_bk"
                                                                      \o stack[self]]
                                 /\ swapVal' = [swapVal EXCEPT ![self] = nVal[self]]
                                 /\ votes' = [votes EXCEPT ![self] = votes_[self]]
-                             /\ minVal' = [minVal EXCEPT ![self] = 0]
-                             /\ Q' = [Q EXCEPT ![self] = {}]
                              /\ voteVal' = [voteVal EXCEPT ![self] = getVoteVal(votes'[self])]
-                             /\ voteCnt' = [voteCnt EXCEPT ![self] = [i \in voteVal'[self] |-> 0]]
+                             /\ voteCnt' = [voteCnt EXCEPT ![self] = getVoteCnt(voteVal'[self], votes'[self])]
                              /\ majVoteVal' = [majVoteVal EXCEPT ![self] = -1]
-                             /\ pc' = [pc EXCEPT ![self] = "EVAL"]
-                             /\ UNCHANGED << db, votes_ >>
+                             /\ pc' = [pc EXCEPT ![self] = "EVAL_check_failure"]
+                             /\ UNCHANGED << db, votes_, Q >>
                   /\ UNCHANGED << up, FailNum, Primary, Backups, retv, orig, 
                                   ret, nVal, cntr, readVal >>
 
@@ -292,7 +274,7 @@ W_modify_rest(self) == /\ pc[self] = "W_modify_rest"
                                         ELSE /\ TRUE
                                              /\ db' = db
                                   /\ Assert(ret'[self] = -1 \/ ret'[self] = orig[self], 
-                                            "Failure of assertion at line 90, column 13.")
+                                            "Failure of assertion at line 82, column 13.")
                                   /\ pc' = [pc EXCEPT ![self] = "W_fini_1"]
                                   /\ Q' = Q
                              ELSE /\ IF retv[self] = 1 \/ retv[self] = 2
@@ -305,9 +287,9 @@ W_modify_rest(self) == /\ pc[self] = "W_modify_rest"
                                              /\ Q' = Q
                                   /\ UNCHANGED << db, ret >>
                        /\ UNCHANGED << up, FailNum, Primary, Backups, retv, 
-                                       stack, votes, origVal, swapVal, minVal, 
-                                       voteVal, voteCnt, majVoteVal, orig, 
-                                       nVal, votes_, cntr, readVal >>
+                                       stack, votes, origVal, swapVal, voteVal, 
+                                       voteCnt, majVoteVal, orig, nVal, votes_, 
+                                       cntr, readVal >>
 
 W_modify_bk(self) == /\ pc[self] = "W_modify_bk"
                      /\ IF Q[self] # {}
@@ -322,20 +304,20 @@ W_modify_bk(self) == /\ pc[self] = "W_modify_bk"
                                       ELSE /\ TRUE
                                            /\ db' = db
                                 /\ Assert(ret'[self] = -1 \/ ret'[self] = orig[self], 
-                                          "Failure of assertion at line 101, column 13.")
+                                          "Failure of assertion at line 93, column 13.")
                                 /\ pc' = [pc EXCEPT ![self] = "W_fini_1"]
                                 /\ Q' = Q
                      /\ UNCHANGED << up, FailNum, Primary, Backups, retv, 
-                                     stack, votes, origVal, swapVal, minVal, 
-                                     voteVal, voteCnt, majVoteVal, orig, nVal, 
-                                     votes_, cntr, readVal >>
+                                     stack, votes, origVal, swapVal, voteVal, 
+                                     voteCnt, majVoteVal, orig, nVal, votes_, 
+                                     cntr, readVal >>
 
 W_wait_commit(self) == /\ pc[self] = "W_wait_commit"
                        /\ pc' = [pc EXCEPT ![self] = "W_check_commit"]
                        /\ UNCHANGED << db, up, FailNum, Primary, Backups, retv, 
-                                       stack, votes, origVal, swapVal, minVal, 
-                                       Q, voteVal, voteCnt, majVoteVal, orig, 
-                                       ret, nVal, votes_, cntr, readVal >>
+                                       stack, votes, origVal, swapVal, voteVal, 
+                                       voteCnt, majVoteVal, orig, ret, nVal, 
+                                       votes_, Q, cntr, readVal >>
 
 W_check_commit(self) == /\ pc[self] = "W_check_commit"
                         /\ ret' = [ret EXCEPT ![self] = IF up[Primary] THEN db[Primary] ELSE -1]
@@ -349,9 +331,9 @@ W_check_commit(self) == /\ pc[self] = "W_check_commit"
                                          ELSE /\ pc' = [pc EXCEPT ![self] = "W_wait_commit"]
                                               /\ retv' = retv
                         /\ UNCHANGED << db, up, FailNum, Primary, Backups, 
-                                        stack, votes, origVal, swapVal, minVal, 
-                                        Q, voteVal, voteCnt, majVoteVal, orig, 
-                                        nVal, votes_, cntr, readVal >>
+                                        stack, votes, origVal, swapVal, 
+                                        voteVal, voteCnt, majVoteVal, orig, 
+                                        nVal, votes_, Q, cntr, readVal >>
 
 W_fini_0(self) == /\ pc[self] = "W_fini_0"
                   /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
@@ -359,10 +341,11 @@ W_fini_0(self) == /\ pc[self] = "W_fini_0"
                   /\ ret' = [ret EXCEPT ![self] = Head(stack[self]).ret]
                   /\ nVal' = [nVal EXCEPT ![self] = Head(stack[self]).nVal]
                   /\ votes_' = [votes_ EXCEPT ![self] = Head(stack[self]).votes_]
+                  /\ Q' = [Q EXCEPT ![self] = Head(stack[self]).Q]
                   /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                   /\ UNCHANGED << db, up, FailNum, Primary, Backups, retv, 
-                                  votes, origVal, swapVal, minVal, Q, voteVal, 
-                                  voteCnt, majVoteVal, cntr, readVal >>
+                                  votes, origVal, swapVal, voteVal, voteCnt, 
+                                  majVoteVal, cntr, readVal >>
 
 W_fini_1(self) == /\ pc[self] = "W_fini_1"
                   /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
@@ -370,10 +353,11 @@ W_fini_1(self) == /\ pc[self] = "W_fini_1"
                   /\ ret' = [ret EXCEPT ![self] = Head(stack[self]).ret]
                   /\ nVal' = [nVal EXCEPT ![self] = Head(stack[self]).nVal]
                   /\ votes_' = [votes_ EXCEPT ![self] = Head(stack[self]).votes_]
+                  /\ Q' = [Q EXCEPT ![self] = Head(stack[self]).Q]
                   /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                   /\ UNCHANGED << db, up, FailNum, Primary, Backups, retv, 
-                                  votes, origVal, swapVal, minVal, Q, voteVal, 
-                                  voteCnt, majVoteVal, cntr, readVal >>
+                                  votes, origVal, swapVal, voteVal, voteCnt, 
+                                  majVoteVal, cntr, readVal >>
 
 SNAPSHOT_Write(self) == W_prepare(self) \/ W_cas_bk(self)
                            \/ W_modify_rest(self) \/ W_modify_bk(self)
@@ -384,32 +368,34 @@ start(self) == /\ pc[self] = "start"
                /\ IF cntr[self] <= STOP
                      THEN /\ \/ /\ TRUE
                                 /\ pc' = [pc EXCEPT ![self] = "proceed"]
-                                /\ UNCHANGED <<stack, orig, ret, nVal, votes_>>
+                                /\ UNCHANGED <<stack, orig, ret, nVal, votes_, Q>>
                              \/ /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "SNAPSHOT_Write",
                                                                          pc        |->  "proceed",
                                                                          orig      |->  orig[self],
                                                                          ret       |->  ret[self],
                                                                          nVal      |->  nVal[self],
-                                                                         votes_    |->  votes_[self] ] >>
+                                                                         votes_    |->  votes_[self],
+                                                                         Q         |->  Q[self] ] >>
                                                                      \o stack[self]]
                                 /\ orig' = [orig EXCEPT ![self] = -1]
                                 /\ ret' = [ret EXCEPT ![self] = -1]
                                 /\ nVal' = [nVal EXCEPT ![self] = 0]
                                 /\ votes_' = [votes_ EXCEPT ![self] = [n \in Backups |-> -1]]
+                                /\ Q' = [Q EXCEPT ![self] = {}]
                                 /\ pc' = [pc EXCEPT ![self] = "W_prepare"]
                      ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
-                          /\ UNCHANGED << stack, orig, ret, nVal, votes_ >>
+                          /\ UNCHANGED << stack, orig, ret, nVal, votes_, Q >>
                /\ UNCHANGED << db, up, FailNum, Primary, Backups, retv, votes, 
-                               origVal, swapVal, minVal, Q, voteVal, voteCnt, 
-                               majVoteVal, cntr, readVal >>
+                               origVal, swapVal, voteVal, voteCnt, majVoteVal, 
+                               cntr, readVal >>
 
 proceed(self) == /\ pc[self] = "proceed"
                  /\ cntr' = [cntr EXCEPT ![self] = cntr[self] + 1]
                  /\ pc' = [pc EXCEPT ![self] = "start"]
                  /\ UNCHANGED << db, up, FailNum, Primary, Backups, retv, 
-                                 stack, votes, origVal, swapVal, minVal, Q, 
-                                 voteVal, voteCnt, majVoteVal, orig, ret, nVal, 
-                                 votes_, readVal >>
+                                 stack, votes, origVal, swapVal, voteVal, 
+                                 voteCnt, majVoteVal, orig, ret, nVal, votes_, 
+                                 Q, readVal >>
 
 c(self) == start(self) \/ proceed(self)
 
@@ -431,5 +417,5 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 \* END TRANSLATION 
 =============================================================================
 \* Modification History
-\* Last modified Sun Sep 04 21:25:40 CST 2022 by berna
+\* Last modified Sun Sep 04 22:45:31 CST 2022 by berna
 \* Created Sun Sep 04 11:12:43 CST 2022 by berna
