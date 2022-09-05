@@ -13,13 +13,13 @@ Nodes   == 1..(NumMN + NumClient)
              FailNum = FAILNUM,
              Primary = 1,
              Backups = MNs \ {1},
-             retv = [n \in Clients |-> 0];
+             retv = [n \in Clients |-> 0],
+             primaryHist = <<0>>;
              
     define {
         getVoteMin(voteVal, origVal, swapVal) == IF origVal \in voteVal 
                                         THEN CHOOSE i \in ((voteVal \ {origVal}) \union {swapVal}): (\A j \in ((voteVal \ {origVal}) \union {swapVal}): i <= j)
                                         ELSE -1
-\*        getVoteMin(voteVal, origVal) == CHOOSE i \in (voteVal \ {origVal}): (\A j \in (voteVal \ {origVal}): i <= j)  
         getVoteVal(votes) == {votes[i] : i \in Backups} 
         getVoteCnt(voteVal, votes) == [i \in voteVal |-> Cardinality(UNION {{j \in Backups: votes[j] = i}})]
         getMajorityVoteVal(voteVal, voteCnt) == CHOOSE i \in voteVal: (\A j \in voteVal: voteCnt[j] <= voteCnt[i]) 
@@ -92,9 +92,11 @@ Nodes   == 1..(NumMN + NumClient)
             };
             CAS(ret, Primary, orig, nVal);
             assert ret = -1 \/ ret = orig;
+            primaryHist := primaryHist \o <<nVal>>;
         } else if (win = 0) {
             CAS(ret, Primary, orig, nVal);
             assert ret = -1 \/ ret = orig;
+            primaryHist := primaryHist \o <<nVal>>;
         } else if (win = 3) {
             committed := FALSE;
     W_wait_commit:
@@ -133,15 +135,14 @@ Nodes   == 1..(NumMN + NumClient)
         }
     }
 }*)
-\* BEGIN TRANSLATION (chksum(pcal) = "f7171e0f" /\ chksum(tla) = "85d644a7")
+\* BEGIN TRANSLATION (chksum(pcal) = "b4f3332a" /\ chksum(tla) = "772580b5")
 \* Procedure variable votes of procedure SNAPSHOT_Write at line 66 col 14 changed to votes_
-VARIABLES db, up, FailNum, Primary, Backups, retv, pc, stack
+VARIABLES db, up, FailNum, Primary, Backups, retv, primaryHist, pc, stack
 
 (* define statement *)
 getVoteMin(voteVal, origVal, swapVal) == IF origVal \in voteVal
                                 THEN CHOOSE i \in ((voteVal \ {origVal}) \union {swapVal}): (\A j \in ((voteVal \ {origVal}) \union {swapVal}): i <= j)
                                 ELSE -1
-
 getVoteVal(votes) == {votes[i] : i \in Backups}
 getVoteCnt(voteVal, votes) == [i \in voteVal |-> Cardinality(UNION {{j \in Backups: votes[j] = i}})]
 getMajorityVoteVal(voteVal, voteCnt) == CHOOSE i \in voteVal: (\A j \in voteVal: voteCnt[j] <= voteCnt[i])
@@ -149,9 +150,9 @@ getMajorityVoteVal(voteVal, voteCnt) == CHOOSE i \in voteVal: (\A j \in voteVal:
 VARIABLES votes, origVal, swapVal, voteVal, voteCnt, majVoteVal, orig, ret, 
           nVal, votes_, Q, committed, win, cntr, readVal
 
-vars == << db, up, FailNum, Primary, Backups, retv, pc, stack, votes, origVal, 
-           swapVal, voteVal, voteCnt, majVoteVal, orig, ret, nVal, votes_, Q, 
-           committed, win, cntr, readVal >>
+vars == << db, up, FailNum, Primary, Backups, retv, primaryHist, pc, stack, 
+           votes, origVal, swapVal, voteVal, voteCnt, majVoteVal, orig, ret, 
+           nVal, votes_, Q, committed, win, cntr, readVal >>
 
 ProcSet == (Clients)
 
@@ -162,6 +163,7 @@ Init == (* Global variables *)
         /\ Primary = 1
         /\ Backups = MNs \ {1}
         /\ retv = [n \in Clients |-> 0]
+        /\ primaryHist = <<0>>
         (* Procedure EvalRules *)
         /\ votes = [ self \in ProcSet |-> [n \in Backups |-> -1]]
         /\ origVal = [ self \in ProcSet |-> 0]
@@ -197,10 +199,10 @@ EVAL_ST(self) == /\ pc[self] = "EVAL_ST"
                                                                    THEN /\ retv' = [retv EXCEPT ![self] = 2]
                                                                    ELSE /\ retv' = [retv EXCEPT ![self] = 3]
                  /\ pc' = [pc EXCEPT ![self] = "EVAL_FINI"]
-                 /\ UNCHANGED << db, up, FailNum, Primary, Backups, stack, 
-                                 votes, origVal, swapVal, voteVal, voteCnt, 
-                                 orig, ret, nVal, votes_, Q, committed, win, 
-                                 cntr, readVal >>
+                 /\ UNCHANGED << db, up, FailNum, Primary, Backups, 
+                                 primaryHist, stack, votes, origVal, swapVal, 
+                                 voteVal, voteCnt, orig, ret, nVal, votes_, Q, 
+                                 committed, win, cntr, readVal >>
 
 EVAL_FINI(self) == /\ pc[self] = "EVAL_FINI"
                    /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
@@ -212,8 +214,8 @@ EVAL_FINI(self) == /\ pc[self] = "EVAL_FINI"
                    /\ swapVal' = [swapVal EXCEPT ![self] = Head(stack[self]).swapVal]
                    /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                    /\ UNCHANGED << db, up, FailNum, Primary, Backups, retv, 
-                                   orig, ret, nVal, votes_, Q, committed, win, 
-                                   cntr, readVal >>
+                                   primaryHist, orig, ret, nVal, votes_, Q, 
+                                   committed, win, cntr, readVal >>
 
 EvalRules(self) == EVAL_ST(self) \/ EVAL_FINI(self)
 
@@ -223,9 +225,9 @@ W_prepare(self) == /\ pc[self] = "W_prepare"
                    /\ Q' = [Q EXCEPT ![self] = Backups]
                    /\ pc' = [pc EXCEPT ![self] = "W_cas_bk"]
                    /\ UNCHANGED << db, up, FailNum, Primary, Backups, retv, 
-                                   stack, votes, origVal, swapVal, voteVal, 
-                                   voteCnt, majVoteVal, ret, votes_, committed, 
-                                   win, cntr, readVal >>
+                                   primaryHist, stack, votes, origVal, swapVal, 
+                                   voteVal, voteCnt, majVoteVal, ret, votes_, 
+                                   committed, win, cntr, readVal >>
 
 W_cas_bk(self) == /\ pc[self] = "W_cas_bk"
                   /\ IF Q[self] # {}
@@ -256,8 +258,9 @@ W_cas_bk(self) == /\ pc[self] = "W_cas_bk"
                              /\ majVoteVal' = [majVoteVal EXCEPT ![self] = -1]
                              /\ pc' = [pc EXCEPT ![self] = "EVAL_ST"]
                              /\ UNCHANGED << db, votes_, Q >>
-                  /\ UNCHANGED << up, FailNum, Primary, Backups, retv, orig, 
-                                  ret, nVal, committed, win, cntr, readVal >>
+                  /\ UNCHANGED << up, FailNum, Primary, Backups, retv, 
+                                  primaryHist, orig, ret, nVal, committed, win, 
+                                  cntr, readVal >>
 
 W_modify_rest(self) == /\ pc[self] = "W_modify_rest"
                        /\ win' = [win EXCEPT ![self] = retv[self]]
@@ -266,7 +269,8 @@ W_modify_rest(self) == /\ pc[self] = "W_modify_rest"
                        /\ IF win'[self] = 1 \/ win'[self] = 2
                              THEN /\ Q' = [Q EXCEPT ![self] = Backups]
                                   /\ pc' = [pc EXCEPT ![self] = "W_modify_all_bk"]
-                                  /\ UNCHANGED << db, ret, committed >>
+                                  /\ UNCHANGED << db, primaryHist, ret, 
+                                                  committed >>
                              ELSE /\ IF win'[self] = 0
                                         THEN /\ ret' = [ret EXCEPT ![self] = IF up[Primary] THEN db[Primary] ELSE -1]
                                              /\ IF db[Primary] = orig[self] /\ up[Primary]
@@ -274,7 +278,8 @@ W_modify_rest(self) == /\ pc[self] = "W_modify_rest"
                                                    ELSE /\ TRUE
                                                         /\ db' = db
                                              /\ Assert(ret'[self] = -1 \/ ret'[self] = orig[self], 
-                                                       "Failure of assertion at line 97, column 13.")
+                                                       "Failure of assertion at line 98, column 13.")
+                                             /\ primaryHist' = primaryHist \o <<nVal[self]>>
                                              /\ pc' = [pc EXCEPT ![self] = "W_fini_0"]
                                              /\ UNCHANGED committed
                                         ELSE /\ IF win'[self] = 3
@@ -283,11 +288,12 @@ W_modify_rest(self) == /\ pc[self] = "W_modify_rest"
                                                    ELSE /\ IF win'[self] = 4
                                                               THEN /\ TRUE
                                                               ELSE /\ Assert(win'[self] = -1, 
-                                                                             "Failure of assertion at line 111, column 13.")
+                                                                             "Failure of assertion at line 113, column 13.")
                                                                    /\ TRUE
                                                         /\ pc' = [pc EXCEPT ![self] = "W_fini_0"]
                                                         /\ UNCHANGED committed
-                                             /\ UNCHANGED << db, ret >>
+                                             /\ UNCHANGED << db, primaryHist, 
+                                                             ret >>
                                   /\ Q' = Q
                        /\ UNCHANGED << up, FailNum, Primary, Backups, retv, 
                                        stack, votes, origVal, swapVal, voteVal, 
@@ -300,7 +306,7 @@ W_modify_all_bk(self) == /\ pc[self] = "W_modify_all_bk"
                                          /\ db' = [db EXCEPT ![p] = IF up[p] THEN nVal[self] ELSE db[p]]
                                          /\ Q' = [Q EXCEPT ![self] = Q[self] \ {p}]
                                     /\ pc' = [pc EXCEPT ![self] = "W_modify_all_bk"]
-                                    /\ ret' = ret
+                                    /\ UNCHANGED << primaryHist, ret >>
                                ELSE /\ ret' = [ret EXCEPT ![self] = IF up[Primary] THEN db[Primary] ELSE -1]
                                     /\ IF db[Primary] = orig[self] /\ up[Primary]
                                           THEN /\ db' = [db EXCEPT ![Primary] = nVal[self]]
@@ -308,6 +314,7 @@ W_modify_all_bk(self) == /\ pc[self] = "W_modify_all_bk"
                                                /\ db' = db
                                     /\ Assert(ret'[self] = -1 \/ ret'[self] = orig[self], 
                                               "Failure of assertion at line 94, column 13.")
+                                    /\ primaryHist' = primaryHist \o <<nVal[self]>>
                                     /\ pc' = [pc EXCEPT ![self] = "W_fini_0"]
                                     /\ Q' = Q
                          /\ UNCHANGED << up, FailNum, Primary, Backups, retv, 
@@ -329,9 +336,10 @@ W_wait_commit(self) == /\ pc[self] = "W_wait_commit"
                              ELSE /\ pc' = [pc EXCEPT ![self] = "W_fini_0"]
                                   /\ UNCHANGED << ret, committed >>
                        /\ UNCHANGED << db, up, FailNum, Primary, Backups, retv, 
-                                       stack, votes, origVal, swapVal, voteVal, 
-                                       voteCnt, majVoteVal, orig, nVal, votes_, 
-                                       Q, win, cntr, readVal >>
+                                       primaryHist, stack, votes, origVal, 
+                                       swapVal, voteVal, voteCnt, majVoteVal, 
+                                       orig, nVal, votes_, Q, win, cntr, 
+                                       readVal >>
 
 W_fini_0(self) == /\ pc[self] = "W_fini_0"
                   /\ retv' = [retv EXCEPT ![self] = 0]
@@ -344,9 +352,9 @@ W_fini_0(self) == /\ pc[self] = "W_fini_0"
                   /\ committed' = [committed EXCEPT ![self] = Head(stack[self]).committed]
                   /\ win' = [win EXCEPT ![self] = Head(stack[self]).win]
                   /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-                  /\ UNCHANGED << db, up, FailNum, Primary, Backups, votes, 
-                                  origVal, swapVal, voteVal, voteCnt, 
-                                  majVoteVal, cntr, readVal >>
+                  /\ UNCHANGED << db, up, FailNum, Primary, Backups, 
+                                  primaryHist, votes, origVal, swapVal, 
+                                  voteVal, voteCnt, majVoteVal, cntr, readVal >>
 
 SNAPSHOT_Write(self) == W_prepare(self) \/ W_cas_bk(self)
                            \/ W_modify_rest(self) \/ W_modify_all_bk(self)
@@ -378,17 +386,17 @@ start(self) == /\ pc[self] = "start"
                      ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
                           /\ UNCHANGED << stack, orig, ret, nVal, votes_, Q, 
                                           committed, win >>
-               /\ UNCHANGED << db, up, FailNum, Primary, Backups, retv, votes, 
-                               origVal, swapVal, voteVal, voteCnt, majVoteVal, 
-                               cntr, readVal >>
+               /\ UNCHANGED << db, up, FailNum, Primary, Backups, retv, 
+                               primaryHist, votes, origVal, swapVal, voteVal, 
+                               voteCnt, majVoteVal, cntr, readVal >>
 
 proceed(self) == /\ pc[self] = "proceed"
                  /\ cntr' = [cntr EXCEPT ![self] = cntr[self] + 1]
                  /\ pc' = [pc EXCEPT ![self] = "start"]
                  /\ UNCHANGED << db, up, FailNum, Primary, Backups, retv, 
-                                 stack, votes, origVal, swapVal, voteVal, 
-                                 voteCnt, majVoteVal, orig, ret, nVal, votes_, 
-                                 Q, committed, win, readVal >>
+                                 primaryHist, stack, votes, origVal, swapVal, 
+                                 voteVal, voteCnt, majVoteVal, orig, ret, nVal, 
+                                 votes_, Q, committed, win, readVal >>
 
 c(self) == start(self) \/ proceed(self)
 
@@ -411,5 +419,5 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 \* END TRANSLATION 
 =============================================================================
 \* Modification History
-\* Last modified Mon Sep 05 00:01:27 CST 2022 by berna
+\* Last modified Mon Sep 05 09:50:07 CST 2022 by berna
 \* Created Sun Sep 04 11:12:43 CST 2022 by berna
