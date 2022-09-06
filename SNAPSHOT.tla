@@ -155,7 +155,7 @@ FAIL   == -1
 \*        return
 \*    }
     
-    procedure EvalRulesN(votes = [n \in Backups |-> FailRec], writeQ = {}, origRec = FailRec, swapRec = FailRec)
+    procedure EvalRules(votes = [n \in Backups |-> FailRec], writeQ = {}, origRec = FailRec, swapRec = FailRec)
     variable voteVal = getVoteValn(votes, writeQ),
              voteCnt = getVoteCntn(voteVal, votes, writeQ),
              majVoteVal = -1, tmpWin = -3, checkRec = FailRec;
@@ -200,8 +200,14 @@ FAIL   == -1
              tmpMsg = EmptyMsg, numRetry = 2;
     {
     W_ST:
-        RDMA_READ(Primary, retRec);
-        swapRec := [val |-> genNewVal(origRec.val, self),
+        RDMA_READ(Primary, origRec);
+        if (origRec.val = -1) {
+            fretInt[self] := -1;
+    W_FAIL_READ_PR_0:
+            return;
+        };
+    W_PREPARE_CAS_BK:
+        swapRec := [val      |-> genNewVal(origRec.val, self),
                     commitID |-> origRec.commitID + 1];
         Q := Backups;
         tmpQ := Q;
@@ -222,15 +228,23 @@ FAIL   == -1
                 tmpQ := tmpQ \ {p};
             }
         };
-        call EvalRulesN(votes, Q, origRec, swapRec);
+        assert Cardinality(Q) > 0;
+        call EvalRules(votes, Q, origRec, swapRec);
     W_EVAL_RULES:
         win := fretInt[self];
         if (win = WIN_R1) {
-            commitHist := Append(commitHist[self], swapRec.commitID);
+            commitHist[self] := Append(commitHist[self], swapRec.commitID);
             CAS(retRec, Primary, origRec, swapRec);
         } else if (win = WIN_R2 \/ win = WIN_R3) {
-            commitHist := Append(commitHist[self], swapRec.commitID);
-            db := [n \in MNs |-> IF up[n] /\ (n \in Backups) THEN swapRec ELSE db[n]];
+            tmpQ := Q;
+    W_WRITE_BK:
+            while (tmpQ # {}) {
+                with (p \in tmpQ) {
+                    db[p] := IF up[p] THEN swapRec ELSE db[p];
+                    tmpQ := tmpQ \ {p}; 
+                }
+            };
+            commitHist[self] := Append(commitHist[self], swapRec.commitID);
     W_CAS_PR_0:
             CAS(retRec, Primary, origRec, swapRec);
         } else if (win = LOSE) {
@@ -247,7 +261,7 @@ FAIL   == -1
                                         THEN Append(commitHist[self], swapRec.commitID)
                                         ELSE Append(commitHist[self], origRec.commitID);
                 }
-            }
+            };
         } else if (win = LOSE_SLOW) {
             commitHist[self] := Append(commitHist[self], origRec.commitID);
         } else if (win = WIN_MASTER) {
@@ -356,6 +370,8 @@ FAIL   == -1
 \*        return;
 \*    }
     
+    \* ==================== Processes ====================
+    \* Client process
     fair process (c \in Clients)
     variable cntr = 0, retVal = -1; 
     {
@@ -378,6 +394,7 @@ FAIL   == -1
         clientState[self] := -1;
     }
     
+    \* MN process => iteratively fails
     fair process (mn \in MNs)
     {
     MN:
@@ -389,6 +406,7 @@ FAIL   == -1
         }
     }
     
+    \* Master process => deal with failures
     fair process (m \in {Master})
     variable firstAlive = -1, activeNodes = {}, 
              replyMsg = EmptyMsg, globalConfig = 0;
@@ -428,7 +446,7 @@ FAIL   == -1
         }
     }
 }*)
-\* BEGIN TRANSLATION (chksum(pcal) = "91ad42d0" /\ chksum(tla) = "ca2c8806")
+\* BEGIN TRANSLATION (chksum(pcal) = "694c0776" /\ chksum(tla) = "c08dd517")
 \* Procedure variable retRec of procedure SNAPSHOT_Read at line 97 col 14 changed to retRec_
 \* Procedure variable origRec of procedure SNAPSHOT_Write at line 197 col 14 changed to origRec_
 \* Procedure variable swapRec of procedure SNAPSHOT_Write at line 197 col 33 changed to swapRec_
@@ -487,7 +505,7 @@ Init == (* Global variables *)
         (* Procedure SNAPSHOT_Read *)
         /\ retRec_ = [ self \in ProcSet |-> FailRec]
         /\ msg = [ self \in ProcSet |-> EmptyMsg]
-        (* Procedure EvalRulesN *)
+        (* Procedure EvalRules *)
         /\ votes = [ self \in ProcSet |-> [n \in Backups |-> FailRec]]
         /\ writeQ = [ self \in ProcSet |-> {}]
         /\ origRec = [ self \in ProcSet |-> FailRec]
@@ -682,27 +700,65 @@ EVAL_FINI(self) == /\ pc[self] = "EVAL_FINI"
                                    firstAlive, activeNodes, replyMsg, 
                                    globalConfig >>
 
-EvalRulesN(self) == EVAL_ST1(self) \/ EVAL_recheck(self)
-                       \/ EVAL_recheck_rep(self) \/ EVAL_ST2(self)
-                       \/ EVAL_FINI(self)
+EvalRules(self) == EVAL_ST1(self) \/ EVAL_recheck(self)
+                      \/ EVAL_recheck_rep(self) \/ EVAL_ST2(self)
+                      \/ EVAL_FINI(self)
 
 W_ST(self) == /\ pc[self] = "W_ST"
-              /\ retRec' = [retRec EXCEPT ![self] = IF up[Primary] THEN db[Primary] ELSE FailRec]
-              /\ swapRec_' = [swapRec_ EXCEPT ![self] = [val |-> genNewVal(origRec_[self].val, self),
-                                                         commitID |-> origRec_[self].commitID + 1]]
-              /\ Q' = [Q EXCEPT ![self] = Backups]
-              /\ tmpQ' = [tmpQ EXCEPT ![self] = Q'[self]]
-              /\ IF Q'[self] = {}
-                    THEN /\ pc' = [pc EXCEPT ![self] = "W_NO_BK_CAS_PR"]
-                    ELSE /\ pc' = [pc EXCEPT ![self] = "W_CAS_ALL_BK"]
-              /\ UNCHANGED << db, up, FailNum, Primary, Backups, fretInt, 
-                              fretRec, chan, prepareChange, configID, 
-                              clientState, commitHist, stack, retRec_, msg, 
-                              votes, writeQ, origRec, swapRec, voteVal, 
-                              voteCnt, majVoteVal, tmpWin, checkRec, origRec_, 
-                              votes_, committed, win, tmpMsg, numRetry, cntr, 
-                              retVal, firstAlive, activeNodes, replyMsg, 
-                              globalConfig >>
+              /\ origRec_' = [origRec_ EXCEPT ![self] = IF up[Primary] THEN db[Primary] ELSE FailRec]
+              /\ IF origRec_'[self].val = -1
+                    THEN /\ fretInt' = [fretInt EXCEPT ![self] = -1]
+                         /\ pc' = [pc EXCEPT ![self] = "W_FAIL_READ_PR_0"]
+                    ELSE /\ pc' = [pc EXCEPT ![self] = "W_PREPARE_CAS_BK"]
+                         /\ UNCHANGED fretInt
+              /\ UNCHANGED << db, up, FailNum, Primary, Backups, fretRec, chan, 
+                              prepareChange, configID, clientState, commitHist, 
+                              stack, retRec_, msg, votes, writeQ, origRec, 
+                              swapRec, voteVal, voteCnt, majVoteVal, tmpWin, 
+                              checkRec, swapRec_, retRec, votes_, Q, committed, 
+                              win, tmpQ, tmpMsg, numRetry, cntr, retVal, 
+                              firstAlive, activeNodes, replyMsg, globalConfig >>
+
+W_FAIL_READ_PR_0(self) == /\ pc[self] = "W_FAIL_READ_PR_0"
+                          /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
+                          /\ origRec_' = [origRec_ EXCEPT ![self] = Head(stack[self]).origRec_]
+                          /\ swapRec_' = [swapRec_ EXCEPT ![self] = Head(stack[self]).swapRec_]
+                          /\ retRec' = [retRec EXCEPT ![self] = Head(stack[self]).retRec]
+                          /\ votes_' = [votes_ EXCEPT ![self] = Head(stack[self]).votes_]
+                          /\ Q' = [Q EXCEPT ![self] = Head(stack[self]).Q]
+                          /\ committed' = [committed EXCEPT ![self] = Head(stack[self]).committed]
+                          /\ win' = [win EXCEPT ![self] = Head(stack[self]).win]
+                          /\ tmpQ' = [tmpQ EXCEPT ![self] = Head(stack[self]).tmpQ]
+                          /\ tmpMsg' = [tmpMsg EXCEPT ![self] = Head(stack[self]).tmpMsg]
+                          /\ numRetry' = [numRetry EXCEPT ![self] = Head(stack[self]).numRetry]
+                          /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
+                          /\ UNCHANGED << db, up, FailNum, Primary, Backups, 
+                                          fretInt, fretRec, chan, 
+                                          prepareChange, configID, clientState, 
+                                          commitHist, retRec_, msg, votes, 
+                                          writeQ, origRec, swapRec, voteVal, 
+                                          voteCnt, majVoteVal, tmpWin, 
+                                          checkRec, cntr, retVal, firstAlive, 
+                                          activeNodes, replyMsg, globalConfig >>
+
+W_PREPARE_CAS_BK(self) == /\ pc[self] = "W_PREPARE_CAS_BK"
+                          /\ swapRec_' = [swapRec_ EXCEPT ![self] = [val      |-> genNewVal(origRec_[self].val, self),
+                                                                     commitID |-> origRec_[self].commitID + 1]]
+                          /\ Q' = [Q EXCEPT ![self] = Backups]
+                          /\ tmpQ' = [tmpQ EXCEPT ![self] = Q'[self]]
+                          /\ IF Q'[self] = {}
+                                THEN /\ pc' = [pc EXCEPT ![self] = "W_NO_BK_CAS_PR"]
+                                ELSE /\ pc' = [pc EXCEPT ![self] = "W_CAS_ALL_BK"]
+                          /\ UNCHANGED << db, up, FailNum, Primary, Backups, 
+                                          fretInt, fretRec, chan, 
+                                          prepareChange, configID, clientState, 
+                                          commitHist, stack, retRec_, msg, 
+                                          votes, writeQ, origRec, swapRec, 
+                                          voteVal, voteCnt, majVoteVal, tmpWin, 
+                                          checkRec, origRec_, retRec, votes_, 
+                                          committed, win, tmpMsg, numRetry, 
+                                          cntr, retVal, firstAlive, 
+                                          activeNodes, replyMsg, globalConfig >>
 
 W_NO_BK_CAS_PR(self) == /\ pc[self] = "W_NO_BK_CAS_PR"
                         /\ retRec' = [retRec EXCEPT ![self] = IF up[Primary] THEN db[Primary] ELSE FailRec]
@@ -760,8 +816,10 @@ W_CAS_ALL_BK(self) == /\ pc[self] = "W_CAS_ALL_BK"
                                  /\ UNCHANGED << stack, votes, writeQ, origRec, 
                                                  swapRec, voteVal, voteCnt, 
                                                  majVoteVal, tmpWin, checkRec >>
-                            ELSE /\ /\ origRec' = [origRec EXCEPT ![self] = origRec_[self]]
-                                    /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "EvalRulesN",
+                            ELSE /\ Assert(Cardinality(Q[self]) > 0, 
+                                           "Failure of assertion at line 231, column 9.")
+                                 /\ /\ origRec' = [origRec EXCEPT ![self] = origRec_[self]]
+                                    /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "EvalRules",
                                                                              pc        |->  "W_EVAL_RULES",
                                                                              voteVal   |->  voteVal[self],
                                                                              voteCnt   |->  voteCnt[self],
@@ -794,19 +852,19 @@ W_CAS_ALL_BK(self) == /\ pc[self] = "W_CAS_ALL_BK"
 W_EVAL_RULES(self) == /\ pc[self] = "W_EVAL_RULES"
                       /\ win' = [win EXCEPT ![self] = fretInt[self]]
                       /\ IF win'[self] = WIN_R1
-                            THEN /\ commitHist' = Append(commitHist[self], swapRec_[self].commitID)
+                            THEN /\ commitHist' = [commitHist EXCEPT ![self] = Append(commitHist[self], swapRec_[self].commitID)]
                                  /\ retRec' = [retRec EXCEPT ![self] = IF up[Primary] THEN db[Primary] ELSE FailRec]
                                  /\ IF db[Primary].val = origRec_[self].val /\ up[Primary]
                                        THEN /\ db' = [db EXCEPT ![Primary] = swapRec_[self]]
                                        ELSE /\ TRUE
                                             /\ db' = db
                                  /\ pc' = [pc EXCEPT ![self] = "W_RET"]
-                                 /\ UNCHANGED << chan, clientState >>
+                                 /\ UNCHANGED << chan, clientState, tmpQ >>
                             ELSE /\ IF win'[self] = WIN_R2 \/ win'[self] = WIN_R3
-                                       THEN /\ commitHist' = Append(commitHist[self], swapRec_[self].commitID)
-                                            /\ db' = [n \in MNs |-> IF up[n] /\ (n \in Backups) THEN swapRec_[self] ELSE db[n]]
-                                            /\ pc' = [pc EXCEPT ![self] = "W_CAS_PR_0"]
-                                            /\ UNCHANGED << chan, clientState >>
+                                       THEN /\ tmpQ' = [tmpQ EXCEPT ![self] = Q[self]]
+                                            /\ pc' = [pc EXCEPT ![self] = "W_WRITE_BK"]
+                                            /\ UNCHANGED << chan, clientState, 
+                                                            commitHist >>
                                        ELSE /\ IF win'[self] = LOSE
                                                   THEN /\ pc' = [pc EXCEPT ![self] = "W_WAIT_COMMIT"]
                                                        /\ UNCHANGED << chan, 
@@ -823,23 +881,43 @@ W_EVAL_RULES(self) == /\ pc[self] = "W_EVAL_RULES"
                                                                              /\ UNCHANGED << chan, 
                                                                                              clientState >>
                                                                         ELSE /\ Assert(win'[self] = FAIL, 
-                                                                                       "Failure of assertion at line 256, column 13.")
+                                                                                       "Failure of assertion at line 270, column 13.")
                                                                              /\ Assert((buildMsg("Req", self, FailRec)) \in MsgType, 
-                                                                                       "Failure of assertion at line 83, column 9 of macro called at line 257, column 13.")
+                                                                                       "Failure of assertion at line 83, column 9 of macro called at line 271, column 13.")
                                                                              /\ chan' = [chan EXCEPT ![Master] = Append(chan[Master], (buildMsg("Req", self, FailRec)))]
                                                                              /\ clientState' = [clientState EXCEPT ![self] = -1]
                                                                              /\ pc' = [pc EXCEPT ![self] = "W_FAIL_WAIT_RECV"]
                                                                              /\ UNCHANGED commitHist
-                                            /\ db' = db
-                                 /\ UNCHANGED retRec
+                                            /\ tmpQ' = tmpQ
+                                 /\ UNCHANGED << db, retRec >>
                       /\ UNCHANGED << up, FailNum, Primary, Backups, fretInt, 
                                       fretRec, prepareChange, configID, stack, 
                                       retRec_, msg, votes, writeQ, origRec, 
                                       swapRec, voteVal, voteCnt, majVoteVal, 
                                       tmpWin, checkRec, origRec_, swapRec_, 
-                                      votes_, Q, committed, tmpQ, tmpMsg, 
-                                      numRetry, cntr, retVal, firstAlive, 
-                                      activeNodes, replyMsg, globalConfig >>
+                                      votes_, Q, committed, tmpMsg, numRetry, 
+                                      cntr, retVal, firstAlive, activeNodes, 
+                                      replyMsg, globalConfig >>
+
+W_WRITE_BK(self) == /\ pc[self] = "W_WRITE_BK"
+                    /\ IF tmpQ[self] # {}
+                          THEN /\ \E p \in tmpQ[self]:
+                                    /\ db' = [db EXCEPT ![p] = IF up[p] THEN swapRec_[self] ELSE db[p]]
+                                    /\ tmpQ' = [tmpQ EXCEPT ![self] = tmpQ[self] \ {p}]
+                               /\ pc' = [pc EXCEPT ![self] = "W_WRITE_BK"]
+                               /\ UNCHANGED commitHist
+                          ELSE /\ commitHist' = [commitHist EXCEPT ![self] = Append(commitHist[self], swapRec_[self].commitID)]
+                               /\ pc' = [pc EXCEPT ![self] = "W_CAS_PR_0"]
+                               /\ UNCHANGED << db, tmpQ >>
+                    /\ UNCHANGED << up, FailNum, Primary, Backups, fretInt, 
+                                    fretRec, chan, prepareChange, configID, 
+                                    clientState, stack, retRec_, msg, votes, 
+                                    writeQ, origRec, swapRec, voteVal, voteCnt, 
+                                    majVoteVal, tmpWin, checkRec, origRec_, 
+                                    swapRec_, retRec, votes_, Q, committed, 
+                                    win, tmpMsg, numRetry, cntr, retVal, 
+                                    firstAlive, activeNodes, replyMsg, 
+                                    globalConfig >>
 
 W_CAS_PR_0(self) == /\ pc[self] = "W_CAS_PR_0"
                     /\ retRec' = [retRec EXCEPT ![self] = IF up[Primary] THEN db[Primary] ELSE FailRec]
@@ -967,9 +1045,11 @@ W_RET(self) == /\ pc[self] = "W_RET"
                                tmpWin, checkRec, cntr, retVal, firstAlive, 
                                activeNodes, replyMsg, globalConfig >>
 
-SNAPSHOT_Write(self) == W_ST(self) \/ W_NO_BK_CAS_PR(self)
-                           \/ W_NO_BK_RETURN(self) \/ W_CAS_ALL_BK(self)
-                           \/ W_EVAL_RULES(self) \/ W_CAS_PR_0(self)
+SNAPSHOT_Write(self) == W_ST(self) \/ W_FAIL_READ_PR_0(self)
+                           \/ W_PREPARE_CAS_BK(self)
+                           \/ W_NO_BK_CAS_PR(self) \/ W_NO_BK_RETURN(self)
+                           \/ W_CAS_ALL_BK(self) \/ W_EVAL_RULES(self)
+                           \/ W_WRITE_BK(self) \/ W_CAS_PR_0(self)
                            \/ W_WAIT_COMMIT(self)
                            \/ W_WAIT_COMMIT_RETURN(self)
                            \/ W_FAIL_WAIT_RECV(self)
@@ -1113,7 +1193,7 @@ M_stopped(self) == /\ pc[self] = "M_stopped"
                    /\ firstAlive' = [firstAlive EXCEPT ![self] = IF getFirstAliveIn(Backups) = -1
                                                                  THEN getFirstAliveIn(MNs) ELSE getFirstAliveIn(Backups)]
                    /\ Assert(firstAlive'[self] \in MNs, 
-                             "Failure of assertion at line 409, column 17.")
+                             "Failure of assertion at line 423, column 17.")
                    /\ IF \E i, j \in (activeNodes'[self] \cap MNs): db[i].val # db[j].val
                          THEN /\ db' = [ n \in MNs |-> IF up[n] THEN db[firstAlive'[self]] ELSE db[n] ]
                          ELSE /\ TRUE
@@ -1134,7 +1214,7 @@ M_stopped(self) == /\ pc[self] = "M_stopped"
 M_reply_msg(self) == /\ pc[self] = "M_reply_msg"
                      /\ IF Len(chan[self]) # 0
                            THEN /\ Assert(replyMsg[self] \in MsgType, 
-                                          "Failure of assertion at line 83, column 9 of macro called at line 419, column 21.")
+                                          "Failure of assertion at line 83, column 9 of macro called at line 433, column 21.")
                                 /\ chan' = [chan EXCEPT ![(Head(chan[self]).client)] = Append(chan[(Head(chan[self]).client)], replyMsg[self])]
                                 /\ pc' = [pc EXCEPT ![self] = "M_reply_msg_proceed"]
                            ELSE /\ pc' = [pc EXCEPT ![self] = "M_proceed_clients"]
@@ -1197,7 +1277,7 @@ m(self) == MASTER(self) \/ M_wait_stop(self) \/ M_stopped(self)
               \/ M_reply_msg(self) \/ M_reply_msg_proceed(self)
               \/ M_proceed_clients(self) \/ M_wait_new_round(self)
 
-Next == (\E self \in ProcSet:  \/ SNAPSHOT_Read(self) \/ EvalRulesN(self)
+Next == (\E self \in ProcSet:  \/ SNAPSHOT_Read(self) \/ EvalRules(self)
                                \/ SNAPSHOT_Write(self))
            \/ (\E self \in Clients: c(self))
            \/ (\E self \in MNs: mn(self))
@@ -1207,7 +1287,7 @@ Spec == /\ Init /\ [][Next]_vars
         /\ \A self \in Clients : /\ WF_vars(c(self))
                                  /\ WF_vars(SNAPSHOT_Write(self))
                                  /\ WF_vars(SNAPSHOT_Read(self))
-                                 /\ WF_vars(EvalRulesN(self))
+                                 /\ WF_vars(EvalRules(self))
         /\ \A self \in MNs : WF_vars(mn(self))
         /\ \A self \in {Master} : /\ WF_vars(m(self))
                                   /\ SF_vars(MASTER(self)) /\ SF_vars(M_wait_stop(self)) /\ SF_vars(M_stopped(self))
@@ -1223,5 +1303,5 @@ Lin == (\A self \in Clients: pc[self] = "Done") =>
 Consistent == (\A self \in Clients: pc[self] = "Done") => \A i, j \in MNs: (up[i] /\ up[j]) => db[i].val = db[j].val
 =============================================================================
 \* Modification History
-\* Last modified Tue Sep 06 21:28:34 CST 2022 by berna
+\* Last modified Tue Sep 06 22:14:57 CST 2022 by berna
 \* Created Sun Sep 04 11:12:43 CST 2022 by berna
