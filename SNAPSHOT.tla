@@ -214,8 +214,8 @@ FAIL   == -1
         if (Q = {}) {
     W_NO_BK_CAS_PR:
             CAS(retRec, Primary, origRec, swapRec);
-            commitHist[self] := IF retRec.val = swapRec.val
-                                THEN Append(commitHist[self], origRec.commitID + 1)
+            commitHist[self] := IF retRec.val = origRec.val
+                                THEN Append(commitHist[self], swapRec.commitID)
                                 ELSE commitHist[self];
             fretInt[self] := IF retRec.val = origRec.val THEN 0 ELSE -1;
     W_NO_BK_RETURN:
@@ -446,7 +446,7 @@ FAIL   == -1
         }
     }
 }*)
-\* BEGIN TRANSLATION (chksum(pcal) = "694c0776" /\ chksum(tla) = "c08dd517")
+\* BEGIN TRANSLATION (chksum(pcal) = "b19bf1a3" /\ chksum(tla) = "8a667cca")
 \* Procedure variable retRec of procedure SNAPSHOT_Read at line 97 col 14 changed to retRec_
 \* Procedure variable origRec of procedure SNAPSHOT_Write at line 197 col 14 changed to origRec_
 \* Procedure variable swapRec of procedure SNAPSHOT_Write at line 197 col 33 changed to swapRec_
@@ -766,8 +766,8 @@ W_NO_BK_CAS_PR(self) == /\ pc[self] = "W_NO_BK_CAS_PR"
                               THEN /\ db' = [db EXCEPT ![Primary] = swapRec_[self]]
                               ELSE /\ TRUE
                                    /\ db' = db
-                        /\ commitHist' = [commitHist EXCEPT ![self] = IF retRec'[self].val = swapRec_[self].val
-                                                                      THEN Append(commitHist[self], origRec_[self].commitID + 1)
+                        /\ commitHist' = [commitHist EXCEPT ![self] = IF retRec'[self].val = origRec_[self].val
+                                                                      THEN Append(commitHist[self], swapRec_[self].commitID)
                                                                       ELSE commitHist[self]]
                         /\ fretInt' = [fretInt EXCEPT ![self] = IF retRec'[self].val = origRec_[self].val THEN 0 ELSE -1]
                         /\ pc' = [pc EXCEPT ![self] = "W_NO_BK_RETURN"]
@@ -1193,7 +1193,7 @@ M_stopped(self) == /\ pc[self] = "M_stopped"
                    /\ firstAlive' = [firstAlive EXCEPT ![self] = IF getFirstAliveIn(Backups) = -1
                                                                  THEN getFirstAliveIn(MNs) ELSE getFirstAliveIn(Backups)]
                    /\ Assert(firstAlive'[self] \in MNs, 
-                             "Failure of assertion at line 423, column 17.")
+                             "Failure of assertion at line 427, column 17.")
                    /\ IF \E i, j \in (activeNodes'[self] \cap MNs): db[i].val # db[j].val
                          THEN /\ db' = [ n \in MNs |-> IF up[n] THEN db[firstAlive'[self]] ELSE db[n] ]
                          ELSE /\ TRUE
@@ -1214,7 +1214,7 @@ M_stopped(self) == /\ pc[self] = "M_stopped"
 M_reply_msg(self) == /\ pc[self] = "M_reply_msg"
                      /\ IF Len(chan[self]) # 0
                            THEN /\ Assert(replyMsg[self] \in MsgType, 
-                                          "Failure of assertion at line 83, column 9 of macro called at line 433, column 21.")
+                                          "Failure of assertion at line 83, column 9 of macro called at line 437, column 21.")
                                 /\ chan' = [chan EXCEPT ![(Head(chan[self]).client)] = Append(chan[(Head(chan[self]).client)], replyMsg[self])]
                                 /\ pc' = [pc EXCEPT ![self] = "M_reply_msg_proceed"]
                            ELSE /\ pc' = [pc EXCEPT ![self] = "M_proceed_clients"]
@@ -1303,5 +1303,5 @@ Lin == (\A self \in Clients: pc[self] = "Done") =>
 Consistent == (\A self \in Clients: pc[self] = "Done") => \A i, j \in MNs: (up[i] /\ up[j]) => db[i].val = db[j].val
 =============================================================================
 \* Modification History
-\* Last modified Tue Sep 06 22:14:57 CST 2022 by berna
+\* Last modified Tue Sep 06 23:04:30 CST 2022 by berna
 \* Created Sun Sep 04 11:12:43 CST 2022 by berna
