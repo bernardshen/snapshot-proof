@@ -1303,5 +1303,5 @@ Lin == (\A self \in Clients: pc[self] = "Done") =>
 Consistent == (\A self \in Clients: pc[self] = "Done") => \A i, j \in MNs: (up[i] /\ up[j]) => db[i].val = db[j].val
 =============================================================================
 \* Modification History
-\* Last modified Tue Sep 06 23:04:30 CST 2022 by berna
+\* Last modified Wed Sep 07 00:08:07 CST 2022 by berna
 \* Created Sun Sep 04 11:12:43 CST 2022 by berna
