@@ -24,6 +24,7 @@ MsgType  == [type : STRING, client : Int, rec : RecType]
              fretRec = [n \in Clients |-> FailRec],
              chan    = [n \in (Clients \cup {Master}) |-> <<>>],
              prepareChange = FALSE,
+             configID      = [n \in Clients |-> 0],
              clientState   = [n \in Clients |-> 0],
              commitHist    = [n \in Clients |-> <<0>>];
              
@@ -225,6 +226,7 @@ MsgType  == [type : STRING, client : Int, rec : RecType]
     C_wait_prepare:
                 await prepareChange = FALSE;
                 clientState[self] := 0;
+                configID[self] := configID[self] + 1;
             };
     C_start_write:
             clientState[self] := 0;
@@ -249,7 +251,7 @@ MsgType  == [type : STRING, client : Int, rec : RecType]
     
     fair process (m \in {Master})
     variable firstAlive = -1, activeNodes = {}, 
-             replyMsg = EmptyMsg;
+             replyMsg = EmptyMsg, globalConfig = 0;
     {
     MASTER:+
         while (TRUE) {
@@ -270,6 +272,7 @@ MsgType  == [type : STRING, client : Int, rec : RecType]
                 };
                 Primary := IF up[Primary] THEN Primary ELSE firstAlive;
                 Backups := (activeNodes \cap MNs) \ {Primary};
+                globalConfig := globalConfig + 1;
                 replyMsg := buildMsg("Rep", Master, db[firstAlive]);
     M_reply_msg:
                 while (Len(chan[self]) # 0) {
@@ -277,18 +280,21 @@ MsgType  == [type : STRING, client : Int, rec : RecType]
     M_reply_msg_proceed:
                     chan[self] := Tail(chan[self]);
                 };
+    M_proceed_clients:
                 prepareChange := FALSE;
+    M_wait_new_round:
+                await \A i \in Clients: pc[i] # "Done" => configID[i] = globalConfig;
             };
         }
     }
 }*)
-\* BEGIN TRANSLATION (chksum(pcal) = "206c1a1b" /\ chksum(tla) = "458cafd2")
-\* Procedure variable retRec of procedure SNAPSHOT_Read at line 81 col 14 changed to retRec_
-\* Procedure variable origRec of procedure SNAPSHOT_Write at line 136 col 14 changed to origRec_
-\* Procedure variable swapRec of procedure SNAPSHOT_Write at line 136 col 33 changed to swapRec_
-\* Procedure variable votes of procedure SNAPSHOT_Write at line 137 col 14 changed to votes_
+\* BEGIN TRANSLATION (chksum(pcal) = "76d81de4" /\ chksum(tla) = "2e2c901e")
+\* Procedure variable retRec of procedure SNAPSHOT_Read at line 82 col 14 changed to retRec_
+\* Procedure variable origRec of procedure SNAPSHOT_Write at line 137 col 14 changed to origRec_
+\* Procedure variable swapRec of procedure SNAPSHOT_Write at line 137 col 33 changed to swapRec_
+\* Procedure variable votes of procedure SNAPSHOT_Write at line 138 col 14 changed to votes_
 VARIABLES db, up, FailNum, Primary, Backups, fretInt, fretRec, chan, 
-          prepareChange, clientState, commitHist, pc, stack
+          prepareChange, configID, clientState, commitHist, pc, stack
 
 (* define statement *)
 getVoteMin(voteVal, origVal, swapVal) == IF origVal \in voteVal
@@ -312,14 +318,14 @@ buildMsg(_type, _client, _rec) == [ type   |-> _type,
 VARIABLES retRec_, msg, votes, origRec, swapRec, voteVal, voteCnt, majVoteVal, 
           tmpWin, checkRec, origRec_, swapRec_, retRec, votes_, Q, committed, 
           win, curCommitID, tmpMsg, numRetry, cntr, retVal, firstAlive, 
-          activeNodes, replyMsg
+          activeNodes, replyMsg, globalConfig
 
 vars == << db, up, FailNum, Primary, Backups, fretInt, fretRec, chan, 
-           prepareChange, clientState, commitHist, pc, stack, retRec_, msg, 
-           votes, origRec, swapRec, voteVal, voteCnt, majVoteVal, tmpWin, 
-           checkRec, origRec_, swapRec_, retRec, votes_, Q, committed, win, 
-           curCommitID, tmpMsg, numRetry, cntr, retVal, firstAlive, 
-           activeNodes, replyMsg >>
+           prepareChange, configID, clientState, commitHist, pc, stack, 
+           retRec_, msg, votes, origRec, swapRec, voteVal, voteCnt, 
+           majVoteVal, tmpWin, checkRec, origRec_, swapRec_, retRec, votes_, 
+           Q, committed, win, curCommitID, tmpMsg, numRetry, cntr, retVal, 
+           firstAlive, activeNodes, replyMsg, globalConfig >>
 
 ProcSet == (Clients) \cup (MNs) \cup ({Master})
 
@@ -333,6 +339,7 @@ Init == (* Global variables *)
         /\ fretRec = [n \in Clients |-> FailRec]
         /\ chan = [n \in (Clients \cup {Master}) |-> <<>>]
         /\ prepareChange = FALSE
+        /\ configID = [n \in Clients |-> 0]
         /\ clientState = [n \in Clients |-> 0]
         /\ commitHist = [n \in Clients |-> <<0>>]
         (* Procedure SNAPSHOT_Read *)
@@ -365,6 +372,7 @@ Init == (* Global variables *)
         /\ firstAlive = [self \in {Master} |-> -1]
         /\ activeNodes = [self \in {Master} |-> {}]
         /\ replyMsg = [self \in {Master} |-> EmptyMsg]
+        /\ globalConfig = [self \in {Master} |-> 0]
         /\ stack = [self \in ProcSet |-> << >>]
         /\ pc = [self \in ProcSet |-> CASE self \in Clients -> "C"
                                         [] self \in MNs -> "MN"
@@ -374,19 +382,19 @@ R_ST(self) == /\ pc[self] = "R_ST"
               /\ retRec_' = [retRec_ EXCEPT ![self] = IF up[Primary] THEN db[Primary] ELSE FailRec]
               /\ IF retRec_'[self].val = -1
                     THEN /\ Assert((buildMsg("Req", self, FailRec)) \in MsgType, 
-                                   "Failure of assertion at line 68, column 9 of macro called at line 86, column 13.")
+                                   "Failure of assertion at line 69, column 9 of macro called at line 87, column 13.")
                          /\ chan' = [chan EXCEPT ![Master] = Append(chan[Master], (buildMsg("Req", self, FailRec)))]
                          /\ clientState' = [clientState EXCEPT ![self] = -1]
                          /\ pc' = [pc EXCEPT ![self] = "R_recv"]
                     ELSE /\ pc' = [pc EXCEPT ![self] = "R_fini"]
                          /\ UNCHANGED << chan, clientState >>
               /\ UNCHANGED << db, up, FailNum, Primary, Backups, fretInt, 
-                              fretRec, prepareChange, commitHist, stack, msg, 
-                              votes, origRec, swapRec, voteVal, voteCnt, 
-                              majVoteVal, tmpWin, checkRec, origRec_, swapRec_, 
-                              retRec, votes_, Q, committed, win, curCommitID, 
-                              tmpMsg, numRetry, cntr, retVal, firstAlive, 
-                              activeNodes, replyMsg >>
+                              fretRec, prepareChange, configID, commitHist, 
+                              stack, msg, votes, origRec, swapRec, voteVal, 
+                              voteCnt, majVoteVal, tmpWin, checkRec, origRec_, 
+                              swapRec_, retRec, votes_, Q, committed, win, 
+                              curCommitID, tmpMsg, numRetry, cntr, retVal, 
+                              firstAlive, activeNodes, replyMsg, globalConfig >>
 
 R_recv(self) == /\ pc[self] = "R_recv"
                 /\ Len(chan[self]) > 0
@@ -396,12 +404,13 @@ R_recv(self) == /\ pc[self] = "R_recv"
                 /\ clientState' = [clientState EXCEPT ![self] = 0]
                 /\ pc' = [pc EXCEPT ![self] = "R_fini"]
                 /\ UNCHANGED << db, up, FailNum, Primary, Backups, fretInt, 
-                                fretRec, prepareChange, commitHist, stack, 
-                                votes, origRec, swapRec, voteVal, voteCnt, 
-                                majVoteVal, tmpWin, checkRec, origRec_, 
-                                swapRec_, retRec, votes_, Q, committed, win, 
-                                curCommitID, tmpMsg, numRetry, cntr, retVal, 
-                                firstAlive, activeNodes, replyMsg >>
+                                fretRec, prepareChange, configID, commitHist, 
+                                stack, votes, origRec, swapRec, voteVal, 
+                                voteCnt, majVoteVal, tmpWin, checkRec, 
+                                origRec_, swapRec_, retRec, votes_, Q, 
+                                committed, win, curCommitID, tmpMsg, numRetry, 
+                                cntr, retVal, firstAlive, activeNodes, 
+                                replyMsg, globalConfig >>
 
 R_fini(self) == /\ pc[self] = "R_fini"
                 /\ fretRec' = [fretRec EXCEPT ![self] = retRec_[self]]
@@ -410,18 +419,19 @@ R_fini(self) == /\ pc[self] = "R_fini"
                 /\ msg' = [msg EXCEPT ![self] = Head(stack[self]).msg]
                 /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                 /\ UNCHANGED << db, up, FailNum, Primary, Backups, fretInt, 
-                                chan, prepareChange, clientState, commitHist, 
-                                votes, origRec, swapRec, voteVal, voteCnt, 
-                                majVoteVal, tmpWin, checkRec, origRec_, 
-                                swapRec_, retRec, votes_, Q, committed, win, 
-                                curCommitID, tmpMsg, numRetry, cntr, retVal, 
-                                firstAlive, activeNodes, replyMsg >>
+                                chan, prepareChange, configID, clientState, 
+                                commitHist, votes, origRec, swapRec, voteVal, 
+                                voteCnt, majVoteVal, tmpWin, checkRec, 
+                                origRec_, swapRec_, retRec, votes_, Q, 
+                                committed, win, curCommitID, tmpMsg, numRetry, 
+                                cntr, retVal, firstAlive, activeNodes, 
+                                replyMsg, globalConfig >>
 
 SNAPSHOT_Read(self) == R_ST(self) \/ R_recv(self) \/ R_fini(self)
 
 EVAL_ST1(self) == /\ pc[self] = "EVAL_ST1"
                   /\ Assert(origRec[self] \in RecType /\ swapRec[self] \in RecType, 
-                            "Failure of assertion at line 105, column 9.")
+                            "Failure of assertion at line 106, column 9.")
                   /\ majVoteVal' = [majVoteVal EXCEPT ![self] = getMajorityVoteVal(voteVal[self], voteCnt[self])]
                   /\ IF -1 \in voteVal[self]
                         THEN /\ tmpWin' = [tmpWin EXCEPT ![self] = -1]
@@ -435,13 +445,13 @@ EVAL_ST1(self) == /\ pc[self] = "EVAL_ST1"
                         THEN /\ pc' = [pc EXCEPT ![self] = "EVAL_recheck"]
                         ELSE /\ pc' = [pc EXCEPT ![self] = "EVAL_FINI"]
                   /\ UNCHANGED << db, up, FailNum, Primary, Backups, fretInt, 
-                                  fretRec, chan, prepareChange, clientState, 
-                                  commitHist, stack, retRec_, msg, votes, 
-                                  origRec, swapRec, voteVal, voteCnt, checkRec, 
-                                  origRec_, swapRec_, retRec, votes_, Q, 
-                                  committed, win, curCommitID, tmpMsg, 
+                                  fretRec, chan, prepareChange, configID, 
+                                  clientState, commitHist, stack, retRec_, msg, 
+                                  votes, origRec, swapRec, voteVal, voteCnt, 
+                                  checkRec, origRec_, swapRec_, retRec, votes_, 
+                                  Q, committed, win, curCommitID, tmpMsg, 
                                   numRetry, cntr, retVal, firstAlive, 
-                                  activeNodes, replyMsg >>
+                                  activeNodes, replyMsg, globalConfig >>
 
 EVAL_recheck(self) == /\ pc[self] = "EVAL_recheck"
                       /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "SNAPSHOT_Read",
@@ -454,27 +464,28 @@ EVAL_recheck(self) == /\ pc[self] = "EVAL_recheck"
                       /\ pc' = [pc EXCEPT ![self] = "R_ST"]
                       /\ UNCHANGED << db, up, FailNum, Primary, Backups, 
                                       fretInt, fretRec, chan, prepareChange, 
-                                      clientState, commitHist, votes, origRec, 
-                                      swapRec, voteVal, voteCnt, majVoteVal, 
-                                      tmpWin, checkRec, origRec_, swapRec_, 
-                                      retRec, votes_, Q, committed, win, 
-                                      curCommitID, tmpMsg, numRetry, cntr, 
+                                      configID, clientState, commitHist, votes, 
+                                      origRec, swapRec, voteVal, voteCnt, 
+                                      majVoteVal, tmpWin, checkRec, origRec_, 
+                                      swapRec_, retRec, votes_, Q, committed, 
+                                      win, curCommitID, tmpMsg, numRetry, cntr, 
                                       retVal, firstAlive, activeNodes, 
-                                      replyMsg >>
+                                      replyMsg, globalConfig >>
 
 EVAL_recheck_rep(self) == /\ pc[self] = "EVAL_recheck_rep"
                           /\ checkRec' = [checkRec EXCEPT ![self] = fretRec[self]]
                           /\ pc' = [pc EXCEPT ![self] = "EVAL_ST2"]
                           /\ UNCHANGED << db, up, FailNum, Primary, Backups, 
                                           fretInt, fretRec, chan, 
-                                          prepareChange, clientState, 
+                                          prepareChange, configID, clientState, 
                                           commitHist, stack, retRec_, msg, 
                                           votes, origRec, swapRec, voteVal, 
                                           voteCnt, majVoteVal, tmpWin, 
                                           origRec_, swapRec_, retRec, votes_, 
                                           Q, committed, win, curCommitID, 
                                           tmpMsg, numRetry, cntr, retVal, 
-                                          firstAlive, activeNodes, replyMsg >>
+                                          firstAlive, activeNodes, replyMsg, 
+                                          globalConfig >>
 
 EVAL_ST2(self) == /\ pc[self] = "EVAL_ST2"
                   /\ IF checkRec[self].val = swapRec[self].val
@@ -486,13 +497,14 @@ EVAL_ST2(self) == /\ pc[self] = "EVAL_ST2"
                                               ELSE /\ tmpWin' = [tmpWin EXCEPT ![self] = 3]
                   /\ pc' = [pc EXCEPT ![self] = "EVAL_FINI"]
                   /\ UNCHANGED << db, up, FailNum, Primary, Backups, fretInt, 
-                                  fretRec, chan, prepareChange, clientState, 
-                                  commitHist, stack, retRec_, msg, votes, 
-                                  origRec, swapRec, voteVal, voteCnt, 
+                                  fretRec, chan, prepareChange, configID, 
+                                  clientState, commitHist, stack, retRec_, msg, 
+                                  votes, origRec, swapRec, voteVal, voteCnt, 
                                   majVoteVal, checkRec, origRec_, swapRec_, 
                                   retRec, votes_, Q, committed, win, 
                                   curCommitID, tmpMsg, numRetry, cntr, retVal, 
-                                  firstAlive, activeNodes, replyMsg >>
+                                  firstAlive, activeNodes, replyMsg, 
+                                  globalConfig >>
 
 EVAL_FINI(self) == /\ pc[self] = "EVAL_FINI"
                    /\ fretInt' = [fretInt EXCEPT ![self] = tmpWin[self]]
@@ -507,11 +519,12 @@ EVAL_FINI(self) == /\ pc[self] = "EVAL_FINI"
                    /\ swapRec' = [swapRec EXCEPT ![self] = Head(stack[self]).swapRec]
                    /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                    /\ UNCHANGED << db, up, FailNum, Primary, Backups, fretRec, 
-                                   chan, prepareChange, clientState, 
+                                   chan, prepareChange, configID, clientState, 
                                    commitHist, retRec_, msg, origRec_, 
                                    swapRec_, retRec, votes_, Q, committed, win, 
                                    curCommitID, tmpMsg, numRetry, cntr, retVal, 
-                                   firstAlive, activeNodes, replyMsg >>
+                                   firstAlive, activeNodes, replyMsg, 
+                                   globalConfig >>
 
 EvalRules(self) == EVAL_ST1(self) \/ EVAL_recheck(self)
                       \/ EVAL_recheck_rep(self) \/ EVAL_ST2(self)
@@ -527,13 +540,13 @@ W_read(self) == /\ pc[self] = "W_read"
                 /\ msg' = [msg EXCEPT ![self] = EmptyMsg]
                 /\ pc' = [pc EXCEPT ![self] = "R_ST"]
                 /\ UNCHANGED << db, up, FailNum, Primary, Backups, fretInt, 
-                                fretRec, chan, prepareChange, clientState, 
-                                commitHist, votes, origRec, swapRec, voteVal, 
-                                voteCnt, majVoteVal, tmpWin, checkRec, 
-                                origRec_, swapRec_, retRec, votes_, Q, 
-                                committed, win, curCommitID, tmpMsg, numRetry, 
-                                cntr, retVal, firstAlive, activeNodes, 
-                                replyMsg >>
+                                fretRec, chan, prepareChange, configID, 
+                                clientState, commitHist, votes, origRec, 
+                                swapRec, voteVal, voteCnt, majVoteVal, tmpWin, 
+                                checkRec, origRec_, swapRec_, retRec, votes_, 
+                                Q, committed, win, curCommitID, tmpMsg, 
+                                numRetry, cntr, retVal, firstAlive, 
+                                activeNodes, replyMsg, globalConfig >>
 
 W_read_fini(self) == /\ pc[self] = "W_read_fini"
                      /\ origRec_' = [origRec_ EXCEPT ![self] = fretRec[self]]
@@ -543,7 +556,7 @@ W_read_fini(self) == /\ pc[self] = "W_read_fini"
                      /\ Q' = [Q EXCEPT ![self] = Backups]
                      /\ IF Q'[self] = {}
                            THEN /\ Assert(origRec_'[self] \in RecType /\ swapRec_'[self] \in RecType, 
-                                          "Failure of assertion at line 54, column 9 of macro called at line 151, column 13.")
+                                          "Failure of assertion at line 55, column 9 of macro called at line 152, column 13.")
                                 /\ retRec' = [retRec EXCEPT ![self] = IF up[Primary] THEN db[Primary] ELSE FailRec]
                                 /\ IF db[Primary].val = origRec_'[self].val /\ up[Primary]
                                       THEN /\ db' = [db EXCEPT ![Primary] = swapRec_'[self]]
@@ -558,12 +571,13 @@ W_read_fini(self) == /\ pc[self] = "W_read_fini"
                                 /\ UNCHANGED << db, fretInt, commitHist, 
                                                 retRec >>
                      /\ UNCHANGED << up, FailNum, Primary, Backups, fretRec, 
-                                     chan, prepareChange, clientState, stack, 
-                                     retRec_, msg, votes, origRec, swapRec, 
-                                     voteVal, voteCnt, majVoteVal, tmpWin, 
-                                     checkRec, votes_, committed, win, tmpMsg, 
-                                     numRetry, cntr, retVal, firstAlive, 
-                                     activeNodes, replyMsg >>
+                                     chan, prepareChange, configID, 
+                                     clientState, stack, retRec_, msg, votes, 
+                                     origRec, swapRec, voteVal, voteCnt, 
+                                     majVoteVal, tmpWin, checkRec, votes_, 
+                                     committed, win, tmpMsg, numRetry, cntr, 
+                                     retVal, firstAlive, activeNodes, replyMsg, 
+                                     globalConfig >>
 
 W_return_cas_primary(self) == /\ pc[self] = "W_return_cas_primary"
                               /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
@@ -580,19 +594,19 @@ W_return_cas_primary(self) == /\ pc[self] = "W_return_cas_primary"
                               /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                               /\ UNCHANGED << db, up, FailNum, Primary, 
                                               Backups, fretInt, fretRec, chan, 
-                                              prepareChange, clientState, 
-                                              commitHist, retRec_, msg, votes, 
-                                              origRec, swapRec, voteVal, 
-                                              voteCnt, majVoteVal, tmpWin, 
-                                              checkRec, cntr, retVal, 
+                                              prepareChange, configID, 
+                                              clientState, commitHist, retRec_, 
+                                              msg, votes, origRec, swapRec, 
+                                              voteVal, voteCnt, majVoteVal, 
+                                              tmpWin, checkRec, cntr, retVal, 
                                               firstAlive, activeNodes, 
-                                              replyMsg >>
+                                              replyMsg, globalConfig >>
 
 W_cas_bk(self) == /\ pc[self] = "W_cas_bk"
                   /\ IF Q[self] # {}
                         THEN /\ \E p \in Q[self]:
                                   /\ Assert(origRec_[self] \in RecType /\ swapRec_[self] \in RecType, 
-                                            "Failure of assertion at line 54, column 9 of macro called at line 162, column 17.")
+                                            "Failure of assertion at line 55, column 9 of macro called at line 163, column 17.")
                                   /\ votes_' = [votes_ EXCEPT ![self][p] = IF up[p] THEN db[p] ELSE FailRec]
                                   /\ IF db[p].val = origRec_[self].val /\ up[p]
                                         THEN /\ db' = [db EXCEPT ![p] = swapRec_[self]]
@@ -625,11 +639,12 @@ W_cas_bk(self) == /\ pc[self] = "W_cas_bk"
                              /\ pc' = [pc EXCEPT ![self] = "EVAL_ST1"]
                              /\ UNCHANGED << db, votes_, Q >>
                   /\ UNCHANGED << up, FailNum, Primary, Backups, fretInt, 
-                                  fretRec, chan, prepareChange, clientState, 
-                                  commitHist, retRec_, msg, origRec_, swapRec_, 
-                                  retRec, committed, win, curCommitID, tmpMsg, 
-                                  numRetry, cntr, retVal, firstAlive, 
-                                  activeNodes, replyMsg >>
+                                  fretRec, chan, prepareChange, configID, 
+                                  clientState, commitHist, retRec_, msg, 
+                                  origRec_, swapRec_, retRec, committed, win, 
+                                  curCommitID, tmpMsg, numRetry, cntr, retVal, 
+                                  firstAlive, activeNodes, replyMsg, 
+                                  globalConfig >>
 
 W_eval_rules(self) == /\ pc[self] = "W_eval_rules"
                       /\ win' = [win EXCEPT ![self] = fretInt[self]]
@@ -658,9 +673,9 @@ W_eval_rules(self) == /\ pc[self] = "W_eval_rules"
                                                                   /\ UNCHANGED << chan, 
                                                                                   clientState >>
                                                              ELSE /\ Assert(win'[self] = -1, 
-                                                                            "Failure of assertion at line 203, column 13.")
+                                                                            "Failure of assertion at line 204, column 13.")
                                                                   /\ Assert((buildMsg("Req", self, FailRec)) \in MsgType, 
-                                                                            "Failure of assertion at line 68, column 9 of macro called at line 204, column 13.")
+                                                                            "Failure of assertion at line 69, column 9 of macro called at line 205, column 13.")
                                                                   /\ chan' = [chan EXCEPT ![Master] = Append(chan[Master], (buildMsg("Req", self, FailRec)))]
                                                                   /\ clientState' = [clientState EXCEPT ![self] = -1]
                                                                   /\ pc' = [pc EXCEPT ![self] = "W_bk_failure_wait"]
@@ -668,17 +683,17 @@ W_eval_rules(self) == /\ pc[self] = "W_eval_rules"
                                                                                   curCommitID >>
                                             /\ db' = db
                       /\ UNCHANGED << up, FailNum, Primary, Backups, fretInt, 
-                                      fretRec, prepareChange, stack, retRec_, 
-                                      msg, votes, origRec, swapRec, voteVal, 
-                                      voteCnt, majVoteVal, tmpWin, checkRec, 
-                                      origRec_, swapRec_, retRec, votes_, Q, 
-                                      committed, tmpMsg, numRetry, cntr, 
-                                      retVal, firstAlive, activeNodes, 
-                                      replyMsg >>
+                                      fretRec, prepareChange, configID, stack, 
+                                      retRec_, msg, votes, origRec, swapRec, 
+                                      voteVal, voteCnt, majVoteVal, tmpWin, 
+                                      checkRec, origRec_, swapRec_, retRec, 
+                                      votes_, Q, committed, tmpMsg, numRetry, 
+                                      cntr, retVal, firstAlive, activeNodes, 
+                                      replyMsg, globalConfig >>
 
 W_cas_primary_1(self) == /\ pc[self] = "W_cas_primary_1"
                          /\ Assert(origRec_[self] \in RecType /\ swapRec_[self] \in RecType, 
-                                   "Failure of assertion at line 54, column 9 of macro called at line 174, column 13.")
+                                   "Failure of assertion at line 55, column 9 of macro called at line 175, column 13.")
                          /\ retRec' = [retRec EXCEPT ![self] = IF up[Primary] THEN db[Primary] ELSE FailRec]
                          /\ IF db[Primary].val = origRec_[self].val /\ up[Primary]
                                THEN /\ db' = [db EXCEPT ![Primary] = swapRec_[self]]
@@ -687,17 +702,18 @@ W_cas_primary_1(self) == /\ pc[self] = "W_cas_primary_1"
                          /\ pc' = [pc EXCEPT ![self] = "W_fini_0"]
                          /\ UNCHANGED << up, FailNum, Primary, Backups, 
                                          fretInt, fretRec, chan, prepareChange, 
-                                         clientState, commitHist, stack, 
-                                         retRec_, msg, votes, origRec, swapRec, 
-                                         voteVal, voteCnt, majVoteVal, tmpWin, 
-                                         checkRec, origRec_, swapRec_, votes_, 
-                                         Q, committed, win, curCommitID, 
-                                         tmpMsg, numRetry, cntr, retVal, 
-                                         firstAlive, activeNodes, replyMsg >>
+                                         configID, clientState, commitHist, 
+                                         stack, retRec_, msg, votes, origRec, 
+                                         swapRec, voteVal, voteCnt, majVoteVal, 
+                                         tmpWin, checkRec, origRec_, swapRec_, 
+                                         votes_, Q, committed, win, 
+                                         curCommitID, tmpMsg, numRetry, cntr, 
+                                         retVal, firstAlive, activeNodes, 
+                                         replyMsg, globalConfig >>
 
 W_cas_primary_2(self) == /\ pc[self] = "W_cas_primary_2"
                          /\ Assert(origRec_[self] \in RecType /\ swapRec_[self] \in RecType, 
-                                   "Failure of assertion at line 54, column 9 of macro called at line 181, column 13.")
+                                   "Failure of assertion at line 55, column 9 of macro called at line 182, column 13.")
                          /\ retRec' = [retRec EXCEPT ![self] = IF up[Primary] THEN db[Primary] ELSE FailRec]
                          /\ IF db[Primary].val = origRec_[self].val /\ up[Primary]
                                THEN /\ db' = [db EXCEPT ![Primary] = swapRec_[self]]
@@ -706,13 +722,14 @@ W_cas_primary_2(self) == /\ pc[self] = "W_cas_primary_2"
                          /\ pc' = [pc EXCEPT ![self] = "W_fini_0"]
                          /\ UNCHANGED << up, FailNum, Primary, Backups, 
                                          fretInt, fretRec, chan, prepareChange, 
-                                         clientState, commitHist, stack, 
-                                         retRec_, msg, votes, origRec, swapRec, 
-                                         voteVal, voteCnt, majVoteVal, tmpWin, 
-                                         checkRec, origRec_, swapRec_, votes_, 
-                                         Q, committed, win, curCommitID, 
-                                         tmpMsg, numRetry, cntr, retVal, 
-                                         firstAlive, activeNodes, replyMsg >>
+                                         configID, clientState, commitHist, 
+                                         stack, retRec_, msg, votes, origRec, 
+                                         swapRec, voteVal, voteCnt, majVoteVal, 
+                                         tmpWin, checkRec, origRec_, swapRec_, 
+                                         votes_, Q, committed, win, 
+                                         curCommitID, tmpMsg, numRetry, cntr, 
+                                         retVal, firstAlive, activeNodes, 
+                                         replyMsg, globalConfig >>
 
 W_wait_commit(self) == /\ pc[self] = "W_wait_commit"
                        /\ IF committed[self] = FALSE
@@ -733,13 +750,13 @@ W_wait_commit(self) == /\ pc[self] = "W_wait_commit"
                                   /\ UNCHANGED << fretInt, commitHist, retRec, 
                                                   committed, curCommitID >>
                        /\ UNCHANGED << db, up, FailNum, Primary, Backups, 
-                                       fretRec, chan, prepareChange, 
+                                       fretRec, chan, prepareChange, configID, 
                                        clientState, stack, retRec_, msg, votes, 
                                        origRec, swapRec, voteVal, voteCnt, 
                                        majVoteVal, tmpWin, checkRec, origRec_, 
                                        swapRec_, votes_, Q, win, tmpMsg, 
                                        numRetry, cntr, retVal, firstAlive, 
-                                       activeNodes, replyMsg >>
+                                       activeNodes, replyMsg, globalConfig >>
 
 W_retry_return(self) == /\ pc[self] = "W_retry_return"
                         /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
@@ -756,11 +773,11 @@ W_retry_return(self) == /\ pc[self] = "W_retry_return"
                         /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                         /\ UNCHANGED << db, up, FailNum, Primary, Backups, 
                                         fretInt, fretRec, chan, prepareChange, 
-                                        clientState, commitHist, retRec_, msg, 
-                                        votes, origRec, swapRec, voteVal, 
-                                        voteCnt, majVoteVal, tmpWin, checkRec, 
-                                        cntr, retVal, firstAlive, activeNodes, 
-                                        replyMsg >>
+                                        configID, clientState, commitHist, 
+                                        retRec_, msg, votes, origRec, swapRec, 
+                                        voteVal, voteCnt, majVoteVal, tmpWin, 
+                                        checkRec, cntr, retVal, firstAlive, 
+                                        activeNodes, replyMsg, globalConfig >>
 
 W_bk_failure_wait(self) == /\ pc[self] = "W_bk_failure_wait"
                            /\ Len(chan[self]) > 0
@@ -773,13 +790,13 @@ W_bk_failure_wait(self) == /\ pc[self] = "W_bk_failure_wait"
                            /\ pc' = [pc EXCEPT ![self] = "W_fini_0"]
                            /\ UNCHANGED << db, up, FailNum, Primary, Backups, 
                                            fretInt, fretRec, prepareChange, 
-                                           stack, retRec_, msg, votes, origRec, 
-                                           swapRec, voteVal, voteCnt, 
-                                           majVoteVal, tmpWin, checkRec, 
-                                           origRec_, swapRec_, votes_, Q, 
-                                           committed, win, numRetry, cntr, 
-                                           retVal, firstAlive, activeNodes, 
-                                           replyMsg >>
+                                           configID, stack, retRec_, msg, 
+                                           votes, origRec, swapRec, voteVal, 
+                                           voteCnt, majVoteVal, tmpWin, 
+                                           checkRec, origRec_, swapRec_, 
+                                           votes_, Q, committed, win, numRetry, 
+                                           cntr, retVal, firstAlive, 
+                                           activeNodes, replyMsg, globalConfig >>
 
 W_fini_0(self) == /\ pc[self] = "W_fini_0"
                   /\ fretInt' = [fretInt EXCEPT ![self] = 0]
@@ -796,11 +813,11 @@ W_fini_0(self) == /\ pc[self] = "W_fini_0"
                   /\ numRetry' = [numRetry EXCEPT ![self] = Head(stack[self]).numRetry]
                   /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                   /\ UNCHANGED << db, up, FailNum, Primary, Backups, fretRec, 
-                                  chan, prepareChange, clientState, commitHist, 
-                                  retRec_, msg, votes, origRec, swapRec, 
-                                  voteVal, voteCnt, majVoteVal, tmpWin, 
-                                  checkRec, cntr, retVal, firstAlive, 
-                                  activeNodes, replyMsg >>
+                                  chan, prepareChange, configID, clientState, 
+                                  commitHist, retRec_, msg, votes, origRec, 
+                                  swapRec, voteVal, voteCnt, majVoteVal, 
+                                  tmpWin, checkRec, cntr, retVal, firstAlive, 
+                                  activeNodes, replyMsg, globalConfig >>
 
 SNAPSHOT_Write(self) == W_read(self) \/ W_read_fini(self)
                            \/ W_return_cas_primary(self) \/ W_cas_bk(self)
@@ -819,12 +836,12 @@ C(self) == /\ pc[self] = "C"
                  ELSE /\ clientState' = [clientState EXCEPT ![self] = -1]
                       /\ pc' = [pc EXCEPT ![self] = "Done"]
            /\ UNCHANGED << db, up, FailNum, Primary, Backups, fretInt, fretRec, 
-                           chan, prepareChange, commitHist, stack, retRec_, 
-                           msg, votes, origRec, swapRec, voteVal, voteCnt, 
-                           majVoteVal, tmpWin, checkRec, origRec_, swapRec_, 
-                           retRec, votes_, Q, committed, win, curCommitID, 
-                           tmpMsg, numRetry, cntr, retVal, firstAlive, 
-                           activeNodes, replyMsg >>
+                           chan, prepareChange, configID, commitHist, stack, 
+                           retRec_, msg, votes, origRec, swapRec, voteVal, 
+                           voteCnt, majVoteVal, tmpWin, checkRec, origRec_, 
+                           swapRec_, retRec, votes_, Q, committed, win, 
+                           curCommitID, tmpMsg, numRetry, cntr, retVal, 
+                           firstAlive, activeNodes, replyMsg, globalConfig >>
 
 C_start_write(self) == /\ pc[self] = "C_start_write"
                        /\ clientState' = [clientState EXCEPT ![self] = 0]
@@ -854,11 +871,11 @@ C_start_write(self) == /\ pc[self] = "C_start_write"
                        /\ pc' = [pc EXCEPT ![self] = "W_read"]
                        /\ UNCHANGED << db, up, FailNum, Primary, Backups, 
                                        fretInt, fretRec, chan, prepareChange, 
-                                       commitHist, retRec_, msg, votes, 
-                                       origRec, swapRec, voteVal, voteCnt, 
-                                       majVoteVal, tmpWin, checkRec, cntr, 
-                                       retVal, firstAlive, activeNodes, 
-                                       replyMsg >>
+                                       configID, commitHist, retRec_, msg, 
+                                       votes, origRec, swapRec, voteVal, 
+                                       voteCnt, majVoteVal, tmpWin, checkRec, 
+                                       cntr, retVal, firstAlive, activeNodes, 
+                                       replyMsg, globalConfig >>
 
 C_after_write(self) == /\ pc[self] = "C_after_write"
                        /\ retVal' = [retVal EXCEPT ![self] = fretInt[self]]
@@ -866,17 +883,19 @@ C_after_write(self) == /\ pc[self] = "C_after_write"
                        /\ pc' = [pc EXCEPT ![self] = "C"]
                        /\ UNCHANGED << db, up, FailNum, Primary, Backups, 
                                        fretInt, fretRec, chan, prepareChange, 
-                                       clientState, commitHist, stack, retRec_, 
-                                       msg, votes, origRec, swapRec, voteVal, 
-                                       voteCnt, majVoteVal, tmpWin, checkRec, 
-                                       origRec_, swapRec_, retRec, votes_, Q, 
-                                       committed, win, curCommitID, tmpMsg, 
-                                       numRetry, firstAlive, activeNodes, 
-                                       replyMsg >>
+                                       configID, clientState, commitHist, 
+                                       stack, retRec_, msg, votes, origRec, 
+                                       swapRec, voteVal, voteCnt, majVoteVal, 
+                                       tmpWin, checkRec, origRec_, swapRec_, 
+                                       retRec, votes_, Q, committed, win, 
+                                       curCommitID, tmpMsg, numRetry, 
+                                       firstAlive, activeNodes, replyMsg, 
+                                       globalConfig >>
 
 C_wait_prepare(self) == /\ pc[self] = "C_wait_prepare"
                         /\ prepareChange = FALSE
                         /\ clientState' = [clientState EXCEPT ![self] = 0]
+                        /\ configID' = [configID EXCEPT ![self] = configID[self] + 1]
                         /\ pc' = [pc EXCEPT ![self] = "C_start_write"]
                         /\ UNCHANGED << db, up, FailNum, Primary, Backups, 
                                         fretInt, fretRec, chan, prepareChange, 
@@ -886,7 +905,7 @@ C_wait_prepare(self) == /\ pc[self] = "C_wait_prepare"
                                         swapRec_, retRec, votes_, Q, committed, 
                                         win, curCommitID, tmpMsg, numRetry, 
                                         cntr, retVal, firstAlive, activeNodes, 
-                                        replyMsg >>
+                                        replyMsg, globalConfig >>
 
 c(self) == C(self) \/ C_start_write(self) \/ C_after_write(self)
               \/ C_wait_prepare(self)
@@ -902,12 +921,12 @@ MN(self) == /\ pc[self] = "MN"
                   ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
                        /\ UNCHANGED << up, FailNum >>
             /\ UNCHANGED << db, Primary, Backups, fretInt, fretRec, chan, 
-                            prepareChange, clientState, commitHist, stack, 
-                            retRec_, msg, votes, origRec, swapRec, voteVal, 
-                            voteCnt, majVoteVal, tmpWin, checkRec, origRec_, 
-                            swapRec_, retRec, votes_, Q, committed, win, 
-                            curCommitID, tmpMsg, numRetry, cntr, retVal, 
-                            firstAlive, activeNodes, replyMsg >>
+                            prepareChange, configID, clientState, commitHist, 
+                            stack, retRec_, msg, votes, origRec, swapRec, 
+                            voteVal, voteCnt, majVoteVal, tmpWin, checkRec, 
+                            origRec_, swapRec_, retRec, votes_, Q, committed, 
+                            win, curCommitID, tmpMsg, numRetry, cntr, retVal, 
+                            firstAlive, activeNodes, replyMsg, globalConfig >>
 
 mn(self) == MN(self)
 
@@ -918,85 +937,118 @@ MASTER(self) == /\ pc[self] = "MASTER"
                       ELSE /\ pc' = [pc EXCEPT ![self] = "MASTER"]
                            /\ UNCHANGED prepareChange
                 /\ UNCHANGED << db, up, FailNum, Primary, Backups, fretInt, 
-                                fretRec, chan, clientState, commitHist, stack, 
-                                retRec_, msg, votes, origRec, swapRec, voteVal, 
-                                voteCnt, majVoteVal, tmpWin, checkRec, 
-                                origRec_, swapRec_, retRec, votes_, Q, 
-                                committed, win, curCommitID, tmpMsg, numRetry, 
-                                cntr, retVal, firstAlive, activeNodes, 
-                                replyMsg >>
+                                fretRec, chan, configID, clientState, 
+                                commitHist, stack, retRec_, msg, votes, 
+                                origRec, swapRec, voteVal, voteCnt, majVoteVal, 
+                                tmpWin, checkRec, origRec_, swapRec_, retRec, 
+                                votes_, Q, committed, win, curCommitID, tmpMsg, 
+                                numRetry, cntr, retVal, firstAlive, 
+                                activeNodes, replyMsg, globalConfig >>
 
 M_wait_stop(self) == /\ pc[self] = "M_wait_stop"
                      /\ \A i \in Clients: clientState[i] = -1
                      /\ pc' = [pc EXCEPT ![self] = "M_stopped"]
                      /\ UNCHANGED << db, up, FailNum, Primary, Backups, 
                                      fretInt, fretRec, chan, prepareChange, 
-                                     clientState, commitHist, stack, retRec_, 
-                                     msg, votes, origRec, swapRec, voteVal, 
-                                     voteCnt, majVoteVal, tmpWin, checkRec, 
-                                     origRec_, swapRec_, retRec, votes_, Q, 
-                                     committed, win, curCommitID, tmpMsg, 
-                                     numRetry, cntr, retVal, firstAlive, 
-                                     activeNodes, replyMsg >>
+                                     configID, clientState, commitHist, stack, 
+                                     retRec_, msg, votes, origRec, swapRec, 
+                                     voteVal, voteCnt, majVoteVal, tmpWin, 
+                                     checkRec, origRec_, swapRec_, retRec, 
+                                     votes_, Q, committed, win, curCommitID, 
+                                     tmpMsg, numRetry, cntr, retVal, 
+                                     firstAlive, activeNodes, replyMsg, 
+                                     globalConfig >>
 
 M_stopped(self) == /\ pc[self] = "M_stopped"
                    /\ activeNodes' = [activeNodes EXCEPT ![self] = aliveSubset({Primary} \union Backups)]
                    /\ firstAlive' = [firstAlive EXCEPT ![self] = IF getFirstAliveIn(Backups) = -1
                                                                  THEN getFirstAliveIn(MNs) ELSE getFirstAliveIn(Backups)]
                    /\ Assert(firstAlive'[self] \in MNs, 
-                             "Failure of assertion at line 267, column 17.")
+                             "Failure of assertion at line 269, column 17.")
                    /\ IF \E i, j \in (activeNodes'[self] \cap MNs): db[i].val # db[j].val
                          THEN /\ db' = [ n \in MNs |-> IF up[n] THEN db[firstAlive'[self]] ELSE db[n] ]
                          ELSE /\ TRUE
                               /\ db' = db
                    /\ Primary' = IF up[Primary] THEN Primary ELSE firstAlive'[self]
                    /\ Backups' = (activeNodes'[self] \cap MNs) \ {Primary'}
+                   /\ globalConfig' = [globalConfig EXCEPT ![self] = globalConfig[self] + 1]
                    /\ replyMsg' = [replyMsg EXCEPT ![self] = buildMsg("Rep", Master, db'[firstAlive'[self]])]
                    /\ pc' = [pc EXCEPT ![self] = "M_reply_msg"]
                    /\ UNCHANGED << up, FailNum, fretInt, fretRec, chan, 
-                                   prepareChange, clientState, commitHist, 
-                                   stack, retRec_, msg, votes, origRec, 
-                                   swapRec, voteVal, voteCnt, majVoteVal, 
-                                   tmpWin, checkRec, origRec_, swapRec_, 
-                                   retRec, votes_, Q, committed, win, 
+                                   prepareChange, configID, clientState, 
+                                   commitHist, stack, retRec_, msg, votes, 
+                                   origRec, swapRec, voteVal, voteCnt, 
+                                   majVoteVal, tmpWin, checkRec, origRec_, 
+                                   swapRec_, retRec, votes_, Q, committed, win, 
                                    curCommitID, tmpMsg, numRetry, cntr, retVal >>
 
 M_reply_msg(self) == /\ pc[self] = "M_reply_msg"
                      /\ IF Len(chan[self]) # 0
                            THEN /\ Assert(replyMsg[self] \in MsgType, 
-                                          "Failure of assertion at line 68, column 9 of macro called at line 276, column 21.")
+                                          "Failure of assertion at line 69, column 9 of macro called at line 279, column 21.")
                                 /\ chan' = [chan EXCEPT ![(Head(chan[self]).client)] = Append(chan[(Head(chan[self]).client)], replyMsg[self])]
                                 /\ pc' = [pc EXCEPT ![self] = "M_reply_msg_proceed"]
-                                /\ UNCHANGED prepareChange
-                           ELSE /\ prepareChange' = FALSE
-                                /\ pc' = [pc EXCEPT ![self] = "MASTER"]
+                           ELSE /\ pc' = [pc EXCEPT ![self] = "M_proceed_clients"]
                                 /\ chan' = chan
                      /\ UNCHANGED << db, up, FailNum, Primary, Backups, 
-                                     fretInt, fretRec, clientState, commitHist, 
-                                     stack, retRec_, msg, votes, origRec, 
-                                     swapRec, voteVal, voteCnt, majVoteVal, 
-                                     tmpWin, checkRec, origRec_, swapRec_, 
-                                     retRec, votes_, Q, committed, win, 
-                                     curCommitID, tmpMsg, numRetry, cntr, 
-                                     retVal, firstAlive, activeNodes, replyMsg >>
+                                     fretInt, fretRec, prepareChange, configID, 
+                                     clientState, commitHist, stack, retRec_, 
+                                     msg, votes, origRec, swapRec, voteVal, 
+                                     voteCnt, majVoteVal, tmpWin, checkRec, 
+                                     origRec_, swapRec_, retRec, votes_, Q, 
+                                     committed, win, curCommitID, tmpMsg, 
+                                     numRetry, cntr, retVal, firstAlive, 
+                                     activeNodes, replyMsg, globalConfig >>
 
 M_reply_msg_proceed(self) == /\ pc[self] = "M_reply_msg_proceed"
                              /\ chan' = [chan EXCEPT ![self] = Tail(chan[self])]
                              /\ pc' = [pc EXCEPT ![self] = "M_reply_msg"]
                              /\ UNCHANGED << db, up, FailNum, Primary, Backups, 
                                              fretInt, fretRec, prepareChange, 
-                                             clientState, commitHist, stack, 
-                                             retRec_, msg, votes, origRec, 
-                                             swapRec, voteVal, voteCnt, 
-                                             majVoteVal, tmpWin, checkRec, 
-                                             origRec_, swapRec_, retRec, 
-                                             votes_, Q, committed, win, 
+                                             configID, clientState, commitHist, 
+                                             stack, retRec_, msg, votes, 
+                                             origRec, swapRec, voteVal, 
+                                             voteCnt, majVoteVal, tmpWin, 
+                                             checkRec, origRec_, swapRec_, 
+                                             retRec, votes_, Q, committed, win, 
                                              curCommitID, tmpMsg, numRetry, 
                                              cntr, retVal, firstAlive, 
-                                             activeNodes, replyMsg >>
+                                             activeNodes, replyMsg, 
+                                             globalConfig >>
+
+M_proceed_clients(self) == /\ pc[self] = "M_proceed_clients"
+                           /\ prepareChange' = FALSE
+                           /\ pc' = [pc EXCEPT ![self] = "M_wait_new_round"]
+                           /\ UNCHANGED << db, up, FailNum, Primary, Backups, 
+                                           fretInt, fretRec, chan, configID, 
+                                           clientState, commitHist, stack, 
+                                           retRec_, msg, votes, origRec, 
+                                           swapRec, voteVal, voteCnt, 
+                                           majVoteVal, tmpWin, checkRec, 
+                                           origRec_, swapRec_, retRec, votes_, 
+                                           Q, committed, win, curCommitID, 
+                                           tmpMsg, numRetry, cntr, retVal, 
+                                           firstAlive, activeNodes, replyMsg, 
+                                           globalConfig >>
+
+M_wait_new_round(self) == /\ pc[self] = "M_wait_new_round"
+                          /\ \A i \in Clients: pc[i] # "Done" => configID[i] = globalConfig[self]
+                          /\ pc' = [pc EXCEPT ![self] = "MASTER"]
+                          /\ UNCHANGED << db, up, FailNum, Primary, Backups, 
+                                          fretInt, fretRec, chan, 
+                                          prepareChange, configID, clientState, 
+                                          commitHist, stack, retRec_, msg, 
+                                          votes, origRec, swapRec, voteVal, 
+                                          voteCnt, majVoteVal, tmpWin, 
+                                          checkRec, origRec_, swapRec_, retRec, 
+                                          votes_, Q, committed, win, 
+                                          curCommitID, tmpMsg, numRetry, cntr, 
+                                          retVal, firstAlive, activeNodes, 
+                                          replyMsg, globalConfig >>
 
 m(self) == MASTER(self) \/ M_wait_stop(self) \/ M_stopped(self)
               \/ M_reply_msg(self) \/ M_reply_msg_proceed(self)
+              \/ M_proceed_clients(self) \/ M_wait_new_round(self)
 
 Next == (\E self \in ProcSet:  \/ SNAPSHOT_Read(self) \/ EvalRules(self)
                                \/ SNAPSHOT_Write(self))
@@ -1024,5 +1076,5 @@ Lin == (\A self \in Clients: pc[self] = "Done") =>
 Consistent == (\A self \in Clients: pc[self] = "Done") => \A i, j \in MNs: (up[i] /\ up[j]) => db[i].val = db[j].val
 =============================================================================
 \* Modification History
-\* Last modified Tue Sep 06 16:57:36 CST 2022 by berna
+\* Last modified Tue Sep 06 19:48:33 CST 2022 by berna
 \* Created Sun Sep 04 11:12:43 CST 2022 by berna
